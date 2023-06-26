@@ -14,14 +14,9 @@
 
 #include <Eigen/Dense>
 
-#include <BipedalLocomotion/Contacts/Contact.h>
 #include <BipedalLocomotion/Contacts/ContactPhaseList.h>
-#include <BipedalLocomotion/FloatingBaseEstimators/LeggedOdometry.h>
-#include <BipedalLocomotion/IK/CoMTask.h>
-#include <BipedalLocomotion/IK/IntegrationBasedIK.h>
-#include <BipedalLocomotion/IK/JointTrackingTask.h>
-#include <BipedalLocomotion/IK/QPInverseKinematics.h>
-#include <BipedalLocomotion/IK/SE3Task.h>
+#include <BipedalLocomotion/ML/MANNTrajectoryGenerator.h>
+#include <BipedalLocomotion/ML/MANNAutoregressiveInputBuilder.h>
 #include <BipedalLocomotion/Math/Wrench.h>
 #include <BipedalLocomotion/ParametersHandler/IParametersHandler.h>
 #include <BipedalLocomotion/ReducedModelControllers/CentroidalMPC.h>
@@ -47,17 +42,27 @@ struct CentoidalMPCInput
     bool isValid{false};
 };
 
+struct CentroidalMPCOutput
+{
+    BipedalLocomotion::ReducedModelControllers::CentroidalMPCOutput controllerOutput;
+    BipedalLocomotion::Contacts::ContactPhaseList contactPhaseList;
+};
+
 } // namespace CentroidalMPCWalking
 
 namespace CentroidalMPCWalking
 {
-class CentroidalMPCBlock : public BipedalLocomotion::System::Advanceable<
-                               CentoidalMPCInput,
-                               BipedalLocomotion::ReducedModelControllers::CentroidalMPCState>
+class CentroidalMPCBlock
+    : public BipedalLocomotion::System::Advanceable<CentoidalMPCInput, CentroidalMPCOutput>
 {
     typename CentroidalMPCBlock::Output m_output;
 
     BipedalLocomotion::ReducedModelControllers::CentroidalMPC m_controller;
+    BipedalLocomotion::ML::MANNAutoregressiveInputBuilder m_generatorInputBuilder;
+    BipedalLocomotion::ML::MANNTrajectoryGenerator m_generator;
+    BipedalLocomotion::ML::MANNDirectionalInput m_directionalInput;
+
+    yarp::os::BufferedPort<yarp::sig::Vector> m_joypadPort;
 
     BipedalLocomotion::Contacts::ContactPhaseList m_phaseList;
 
@@ -67,6 +72,7 @@ class CentroidalMPCBlock : public BipedalLocomotion::System::Advanceable<
     bool m_isFirstRun{true};
     Eigen::MatrixXd m_comTraj;
     unsigned int m_indexCoM{0};
+    double m_robotMass;
 
 public:
     bool initialize(std::weak_ptr<const BipedalLocomotion::ParametersHandler::IParametersHandler>

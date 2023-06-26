@@ -13,8 +13,9 @@
 #include <BipedalLocomotion/System/Clock.h>
 #include <BipedalLocomotion/TextLogging/Logger.h>
 
+#include <iDynTree/ModelIO/ModelLoader.h>
+
 #include <CentroidalMPCWalking/CentroidalMPCBlock.h>
-#include <CentroidalMPCWalking/Utilities.h>
 
 using namespace CentroidalMPCWalking;
 using namespace BipedalLocomotion::ParametersHandler;
@@ -35,14 +36,103 @@ void updateContactPhaseList(
 
 bool CentroidalMPCBlock::initialize(std::weak_ptr<const IParametersHandler> handler)
 {
-    m_comTraj.resize(3, 1500);
+    constexpr auto logPrefix = "[CentroidalMPCBlock::initialize]";
+    using BipedalLocomotion::log;
+    using namespace std::chrono_literals;
 
-    if (!m_controller.initialize(handler))
+    auto getParameter = [logPrefix](std::weak_ptr<const IParametersHandler> handler,
+                                    const std::string& paramName,
+                                    auto& param) -> bool {
+        auto ptr = handler.lock();
+        if (ptr == nullptr)
+        {
+            log()->error("{} Invalid parameter handler.", logPrefix);
+            return false;
+        }
+
+        if (!ptr->getParameter(paramName, param))
+        {
+            log()->error("{} Unable to find the parameter named {}.", logPrefix, paramName);
+            return false;
+        }
+
+        return true;
+    };
+
+    auto ptr = handler.lock();
+    if (ptr == nullptr)
     {
-        BipedalLocomotion::log()->error("[CentroidalMPCBlock::initialize] Unable to initialize the "
-                                        "controller");
+        log()->error("{} Invalid parameter handler.", logPrefix);
         return false;
     }
+
+    if (!m_controller.initialize(ptr->getGroup("MPC")))
+    {
+        log()->error("{} Unable to initialize the MPC.", logPrefix);
+        return false;
+    }
+
+    std::string modelPath;
+    std::vector<std::string> jointsList;
+    if (!getParameter(ptr->getGroup("MANN"), "model_path", modelPath)
+        || !getParameter(ptr->getGroup("MANN"), "joints_list", jointsList))
+    {
+        log()->error("{} Unable to get the parameter required by the MANN network.", logPrefix);
+        return false;
+    }
+
+    iDynTree::ModelLoader ml;
+    ml.loadReducedModelFromFile(modelPath, jointsList);
+    if (!m_generator.setRobotModel(ml.model()))
+    {
+        log()->error("{} Unable to set the robot model for MANN.", logPrefix);
+        return false;
+    }
+
+    m_robotMass = ml.model().getTotalMass();
+
+    if (!m_generator.initialize(ptr->getGroup("MANN")))
+    {
+        log()->error("{} Unable to initialize the MANN trajectory generator class.", logPrefix);
+        return false;
+    }
+
+    if (!m_generatorInputBuilder.initialize(ptr->getGroup("MANN")))
+    {
+        log()->error("{} Unable to initialize the MANN trajectory generator input builder class.",
+                     logPrefix);
+        return false;
+    }
+
+    // set the initial state of mann trajectory generator
+    manif::SE3d basePose = manif::SE3d(Eigen::Vector3d{0, 0, 0.7748},
+                                       Eigen::AngleAxis(0.0, Eigen::Vector3d::UnitY()));
+
+    BipedalLocomotion::Contacts::EstimatedContact leftFoot, rightFoot;
+    leftFoot.isActive = true;
+    leftFoot.name = "left_foot";
+    leftFoot.index = ml.model().getFrameIndex("l_sole");
+    leftFoot.switchTime = 0s;
+    leftFoot.pose = manif::SE3d(Eigen::Vector3d{0, 0.08, 0}, manif::SO3d::Identity());
+
+    rightFoot.isActive = true;
+    rightFoot.name = "right_foot";
+    rightFoot.index = ml.model().getFrameIndex("r_sole");
+    rightFoot.switchTime = 0s;
+    rightFoot.pose = manif::SE3d(Eigen::Vector3d{0, -0.08, 0}, manif::SO3d::Identity());
+
+    Eigen::VectorXd jointPositions(26);
+    jointPositions << -0.10922017141063572, 0.05081325960010118, 0.06581966291990003,
+        -0.0898053099824925, -0.09324922528169599, -0.05110058859172172, -0.11021232812838086,
+        0.054291515925228385, 0.0735575862560208, -0.09509332143185895, -0.09833823347493076,
+        -0.05367281245082792, 0.1531558711397399, -0.001030634273454133, 0.0006584764419034815,
+        -0.0016821925351926288, -0.004284529460797688, 0.030389771690123243, -0.040592118429752494,
+        -0.1695472679986807, -0.20799422095574033, 0.045397975984119654, -0.03946672931050908,
+        -0.16795588539580256, -0.20911090583076936, 0.0419854257806720;
+
+    m_generator.setInitialState(jointPositions, leftFoot, rightFoot, basePose, 0s);
+
+    m_joypadPort.open("/centroidal-mpc/joystick:i");
 
     return true;
 }
@@ -54,244 +144,99 @@ const CentroidalMPCBlock::Output& CentroidalMPCBlock::getOutput() const
 
 bool CentroidalMPCBlock::setInput(const Input& input)
 {
-    if (input.isValid)
+    if (!input.isValid)
     {
-        m_inputValid = input.isValid;
-
-        if (m_isFirstRun)
-        {
-            m_isFirstRun = false;
-
-            // TODO Remove me!
-            // left foot
-            // first footstep
-
-            constexpr double scaling = 1;
-            constexpr double scalingPos = 1.5;
-            constexpr double scalingPosY = 0;
-            // // t  0   1   2   3   4   5   6   7   8   9   10  11  12  13  14  15  16  17  18  19
-            // 20  21  22  23  24  25  26  27
-            // // L
-            // |+++|---|+++++++++++|---|+++++++++++|---|+++++++++++|---|+++++++++++|---|+++++++++++|---|++++++++++|---|+++|
-            // // R
-            // |+++++++++++|---|+++++++++++|---|+++++++++++|---|+++++++++++|---|+++++++++++|---|+++++++++++|---|+++++++++|
-            BipedalLocomotion::Contacts::ContactListMap contactListMap;
-
-            Eigen::Vector3d leftPosition = input.leftFoot.translation();
-            manif::SE3d leftTransform(leftPosition, manif::SO3d::Identity());
-            contactListMap["left_foot"].addContact(leftTransform, 0.0, 1.0 * scaling);
-
-            leftPosition(0) += 0.05 * scalingPos;
-            leftTransform.translation(leftPosition);
-            contactListMap["left_foot"].addContact(leftTransform, 2.0 * scaling, 5.0 * scaling);
-
-            leftPosition(0) += 0.1 * scalingPos;
-            leftPosition(2) = 0.0 + 0.0;
-            // leftTransform.quat(Eigen::AngleAxisd(0.1, Eigen::Vector3d::UnitX()));
-            leftTransform.translation(leftPosition);
-            contactListMap["left_foot"].addContact(leftTransform, 6.0 * scaling, 9.0 * scaling);
-
-            leftPosition(0) += 0.1 * scalingPos;
-            leftPosition(2) = 0.0;
-            leftTransform.quat(manif::SO3d::Identity());
-            leftTransform.translation(leftPosition);
-            contactListMap["left_foot"].addContact(leftTransform, 10.0 * scaling, 13.0 * scaling);
-
-            leftPosition(0) += 0.1 * scalingPos;
-            leftTransform.translation(leftPosition);
-            contactListMap["left_foot"].addContact(leftTransform, 14.0 * scaling, 17.0 * scaling);
-
-            leftPosition(1) -= 0.01 * scalingPosY;
-            leftTransform.translation(leftPosition);
-            contactListMap["left_foot"].addContact(leftTransform, 18.0 * scaling, 21.0 * scaling);
-
-            leftPosition(1) -= 0.01 * scalingPosY;
-            leftTransform.translation(leftPosition);
-            contactListMap["left_foot"].addContact(leftTransform, 22.0 * scaling, 25.0 * scaling);
-
-            leftPosition(1) -= 0.01 * scalingPosY;
-            leftTransform.translation(leftPosition);
-            contactListMap["left_foot"].addContact(leftTransform, 26.0 * scaling, 29.0 * scaling);
-
-            // // t  0   1   2   3   4   5   6   7   8   9   10  11  12  13  14  15  16  17  18  19
-            // 20  21  22  23  24  25  26  27
-            // // L
-            // |+++|---|+++++++++++|---|+++++++++++|---|+++++++++++|---|+++++++++++|---|+++++++++++|---|++++++++++|---|+++|
-            // // R
-            // |+++++++++++|---|+++++++++++|---|+++++++++++|---|+++++++++++|---|+++++++++++|---|+++++++++++|---|+++++++++|
-
-            // right foot
-            // first footstep
-            Eigen::Vector3d rightPosition = input.rightFoot.translation();
-            manif::SE3d rightTransform(rightPosition, manif::SO3d::Identity());
-
-            contactListMap["right_foot"].addContact(rightTransform, 0.0, 3.0 * scaling);
-
-            rightPosition(0) += 0.1 * scalingPos;
-            rightTransform.translation(rightPosition);
-            contactListMap["right_foot"].addContact(rightTransform, 4.0 * scaling, 7.0 * scaling);
-
-            rightPosition(0) += 0.1 * scalingPos;
-            rightTransform.translation(rightPosition);
-            contactListMap["right_foot"].addContact(rightTransform, 8.0 * scaling, 11.0 * scaling);
-
-            rightPosition(0) += 0.1 * scalingPos;
-            rightTransform.translation(rightPosition);
-            contactListMap["right_foot"].addContact(rightTransform, 12.0 * scaling, 15.0 * scaling);
-
-            rightPosition(0) += 0.05 * scalingPos;
-            rightPosition(1) -= 0.01 * scalingPosY;
-            rightTransform.translation(rightPosition);
-            contactListMap["right_foot"].addContact(rightTransform, 16.0 * scaling, 19.0 * scaling);
-
-            rightPosition(1) -= 0.01 * scalingPosY;
-            rightTransform.translation(rightPosition);
-            contactListMap["right_foot"].addContact(rightTransform, 20.0 * scaling, 23.0 * scaling);
-
-            rightPosition(1) -= 0.01 * scalingPosY;
-            rightTransform.translation(rightPosition);
-            contactListMap["right_foot"].addContact(rightTransform, 24.0 * scaling, 27.0 * scaling);
-
-            rightPosition(1) -= 0.01 * scalingPosY;
-            rightTransform.translation(rightPosition);
-            contactListMap["right_foot"].addContact(rightTransform, 28.0 * scaling, 29.0 * scaling);
-
-            // contactListMap =
-            // BipedalLocomotion::Contacts::contactListMapFromJson("footsteps.json");
-            m_phaseList.setLists(contactListMap);
-            m_phaseIt = m_phaseList.begin();
-
-            std::vector<Eigen::VectorXd> comKnots;
-            std::vector<double> timeKnots;
-
-            BipedalLocomotion::Planners::QuinticSpline comSpline;
-            timeKnots.push_back(m_phaseList.cbegin()->beginTime);
-            comKnots.push_back(input.com);
-            for (auto it = m_phaseList.begin(); it != m_phaseList.end(); std::advance(it, 1))
-            {
-                if (it->activeContacts.size() == 2 && it != m_phaseList.begin()
-                    && it != m_phaseList.lastPhase())
-                {
-                    timeKnots.emplace_back((it->endTime + it->beginTime) / 2);
-
-                    auto contactIt = it->activeContacts.cbegin();
-                    const Eigen::Vector3d p1 = contactIt->second->pose.translation();
-                    std::advance(contactIt, 1);
-                    const Eigen::Vector3d p2 = contactIt->second->pose.translation();
-
-                    Eigen::Vector3d desiredCoMPosition = (p1 + p2) / 2.0;
-                    desiredCoMPosition(2) += input.com(2);
-
-                    comKnots.emplace_back(desiredCoMPosition);
-                }
-
-                else if (it->activeContacts.size() == 2 && it == m_phaseList.lastPhase())
-                {
-                    timeKnots.push_back(it->endTime);
-                    auto contactIt = it->activeContacts.cbegin();
-                    const Eigen::Vector3d p1 = contactIt->second->pose.translation();
-                    std::advance(contactIt, 1);
-                    const Eigen::Vector3d p2 = contactIt->second->pose.translation();
-
-                    Eigen::Vector3d desiredCoMPosition = (p1 + p2) / 2.0;
-                    desiredCoMPosition(2) += input.com(2);
-
-                    comKnots.emplace_back(desiredCoMPosition);
-                }
-            }
-
-            comSpline.setInitialConditions(Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
-            comSpline.setFinalConditions(Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
-            comSpline.setKnots(comKnots, timeKnots);
-
-            Eigen::Vector3d velocity, acceleration;
-
-            int tempInt = 1000;
-            for (int i = 0; i < tempInt / scaling; i++)
-            {
-                // TODO remove me
-                comSpline.evaluatePoint(i * 0.1, m_comTraj.col(i), velocity, acceleration);
-            }
-
-            // i = 3
-            // * *
-            // 1 2 3 4 5
-            m_comTraj.rightCols(m_comTraj.cols() - tempInt).colwise() = m_comTraj.col(tempInt - 1);
-        }
-
-        return m_controller.setState(input.com,
-                                     input.dcom,
-                                     input.angularMomentum,
-                                     input.totalExternalWrench.force());
+        return true;
     }
-    return true;
+
+    m_inputValid = input.isValid;
+    return m_controller.setState(input.com,
+                                 input.dcom,
+                                 input.angularMomentum,
+                                 input.totalExternalWrench);
 }
 
 bool CentroidalMPCBlock::advance()
 {
     namespace blf = ::BipedalLocomotion;
+    using BipedalLocomotion::log;
+
     constexpr auto logPrefix = "[CentroidalMPCBlock::advance]";
 
-    if (m_inputValid)
+    if (!m_inputValid)
     {
-
-        std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
-
-        // update the phaseList this happens only when a new contact should be established
-        auto newPhaseIt = m_phaseList.getPresentPhase(m_currentTime);
-        if (newPhaseIt != m_phaseIt)
-        { // check if new contact is established
-            if (m_phaseIt->activeContacts.size() == 1 && newPhaseIt->activeContacts.size() == 2)
-            {
-                updateContactPhaseList(m_controller.getOutput().nextPlannedContact, m_phaseList);
-
-                // the iterators have been modified we have to compute the new one
-                m_phaseIt = m_phaseList.getPresentPhase(m_currentTime);
-            } else
-            {
-                // the iterators did not change no need to get the present phase again
-                m_phaseIt = newPhaseIt;
-            }
-        }
-
-        if (!m_controller.setReferenceTrajectory(
-                m_comTraj.rightCols(m_comTraj.cols() - m_indexCoM)))
-        {
-            blf::log()->error("{} Unable to set the reference CoM position.", logPrefix);
-            return false;
-        }
-
-        if (!m_controller.setContactPhaseList(m_phaseList))
-        {
-            blf::log()->error("{} Unable to set the contact phase list.", logPrefix);
-            return false;
-        }
-
-        if (!m_controller.advance())
-        {
-            blf::log()->error("{} Unable to compute the control output.", logPrefix);
-            return false;
-        }
-
-        m_indexCoM++;
-
-        std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-
-        m_output.computationalTime
-            = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
-        m_output.nextPlannedContact = m_controller.getOutput().nextPlannedContact;
-        m_output.contacts = m_controller.getOutput().contacts;
-        m_output.externalWrench = m_controller.getOutput().externalWrench;
-
-        m_currentTime += 0.1;
-        m_currentTime = roundoff(m_currentTime, 2);
-
         return true;
     }
+
+    yarp::sig::Vector* tmp = m_joypadPort.read(false);
+    if (tmp != nullptr && tmp->size() == 4)
+    {
+        m_directionalInput.motionDirection << tmp->operator()(0), tmp->operator()(1);
+        m_directionalInput.facingDirection << tmp->operator()(2), tmp->operator()(3);
+    }
+
+    m_generatorInputBuilder.setInput(m_directionalInput);
+    m_generatorInputBuilder.advance();
+
+    BipedalLocomotion::ML::MANNTrajectoryGeneratorInput generatorInput;
+    generatorInput.mergePointIndex = 1;
+    generatorInput.desiredFutureBaseTrajectory = m_generatorInputBuilder.getOutput().desiredFutureBaseTrajectory;
+    generatorInput.desiredFutureBaseVelocities = m_generatorInputBuilder.getOutput().desiredFutureBaseVelocities;    
+    generatorInput.desiredFutureFacingDirections = m_generatorInputBuilder.getOutput().desiredFutureFacingDirections;        
+
+    if (m_isFirstRun)
+    {
+        generatorInput.mergePointIndex = 0;
+        m_isFirstRun = false;
+    }
+    
+    if(!m_generator.setInput(generatorInput))
+    {
+        log()->error("{} Unable to set the input to MANN generator.", logPrefix);
+        return false;        
+    }
+    if (!m_generator.advance())
+    {
+        log()->error("{} Unable to compute one step of the MANN generator.", logPrefix);
+        return false;
+    }
+
+    const auto& MANNGeneratorOutput = m_generator.getOutput();
+
+    // the feedback has been already set in setInput
+
+    auto scaledAngularMomentum = MANNGeneratorOutput.angularMomentumTrajectory;
+    for (auto& t : scaledAngularMomentum)
+    {
+        t = t / m_robotMass;
+    }
+
+    if (!m_controller.setReferenceTrajectory(MANNGeneratorOutput.comTrajectory,
+                                             scaledAngularMomentum))
+    {
+        log()->error("{} Unable to set the reference trajectory of the MPC.", logPrefix);
+        return false;
+    }
+
+    if (!m_controller.setContactPhaseList(MANNGeneratorOutput.phaseList))
+    {
+        log()->error("{} Unable to set the contact list in the MPC.", logPrefix);
+        return false;
+    }
+
+    if (!m_controller.advance())
+    {
+        log()->error("{} Unable to evaluate the output of the MPC.", logPrefix);
+        return false;
+    }
+
+    m_output.controllerOutput = m_controller.getOutput();
+    m_output.contactPhaseList = MANNGeneratorOutput.phaseList;
+
     return true;
 }
 
 bool CentroidalMPCBlock::isOutputValid() const
 {
-    return m_controller.isOutputValid();
+    return m_generator.isOutputValid() && m_controller.isOutputValid();
 }
