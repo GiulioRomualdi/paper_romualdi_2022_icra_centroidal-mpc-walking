@@ -7,6 +7,8 @@
 
 #include <manif/manif.h>
 
+#include <yarp/os/RFModule.h>
+
 #include <BipedalLocomotion/Contacts/ContactListJsonParser.h>
 #include <BipedalLocomotion/Contacts/ContactPhaseList.h>
 #include <BipedalLocomotion/Planners/QuinticSpline.h>
@@ -66,16 +68,18 @@ bool CentroidalMPCBlock::initialize(std::weak_ptr<const IParametersHandler> hand
         return false;
     }
 
-    if (!m_controller.initialize(ptr->getGroup("MPC")))
+    if (!m_controller.initialize(ptr->getGroup("CENTROIDAL_MPC")))
     {
         log()->error("{} Unable to initialize the MPC.", logPrefix);
         return false;
     }
 
-    std::string modelPath;
+    std::string modelPath
+        = yarp::os::ResourceFinder::getResourceFinderSingleton().findFileByName("model.urdf");
+    BipedalLocomotion::log()->info("{} Model path: {}", logPrefix, modelPath);
+
     std::vector<std::string> jointsList;
-    if (!getParameter(ptr->getGroup("MANN"), "model_path", modelPath)
-        || !getParameter(ptr->getGroup("MANN"), "joints_list", jointsList))
+    if (!getParameter(ptr->getGroup("MANN"), "joints_list", jointsList))
     {
         log()->error("{} Unable to get the parameter required by the MANN network.", logPrefix);
         return false;
@@ -163,11 +167,8 @@ bool CentroidalMPCBlock::advance()
 
     constexpr auto logPrefix = "[CentroidalMPCBlock::advance]";
 
-    if (!m_inputValid)
-    {
-        return true;
-    }
-
+    // MANN trajectory generator does not require any input. Indeed we need the output of the
+    // trajectory generator to compute the first step of the whole body controller.
     yarp::sig::Vector* tmp = m_joypadPort.read(false);
     if (tmp != nullptr && tmp->size() == 4)
     {
@@ -180,20 +181,17 @@ bool CentroidalMPCBlock::advance()
 
     BipedalLocomotion::ML::MANNTrajectoryGeneratorInput generatorInput;
     generatorInput.mergePointIndex = 1;
-    generatorInput.desiredFutureBaseTrajectory = m_generatorInputBuilder.getOutput().desiredFutureBaseTrajectory;
-    generatorInput.desiredFutureBaseVelocities = m_generatorInputBuilder.getOutput().desiredFutureBaseVelocities;    
-    generatorInput.desiredFutureFacingDirections = m_generatorInputBuilder.getOutput().desiredFutureFacingDirections;        
+    generatorInput.desiredFutureBaseTrajectory
+        = m_generatorInputBuilder.getOutput().desiredFutureBaseTrajectory;
+    generatorInput.desiredFutureBaseVelocities
+        = m_generatorInputBuilder.getOutput().desiredFutureBaseVelocities;
+    generatorInput.desiredFutureFacingDirections
+        = m_generatorInputBuilder.getOutput().desiredFutureFacingDirections;
 
-    if (m_isFirstRun)
-    {
-        generatorInput.mergePointIndex = 0;
-        m_isFirstRun = false;
-    }
-    
-    if(!m_generator.setInput(generatorInput))
+    if (!m_generator.setInput(generatorInput))
     {
         log()->error("{} Unable to set the input to MANN generator.", logPrefix);
-        return false;        
+        return false;
     }
     if (!m_generator.advance())
     {
@@ -201,10 +199,24 @@ bool CentroidalMPCBlock::advance()
         return false;
     }
 
+    // get the contact phase list from MANN generator
     const auto& MANNGeneratorOutput = m_generator.getOutput();
+    m_output.contactPhaseList = MANNGeneratorOutput.phaseList;
+
+    // for the next steps we need a valid input
+    if (!m_inputValid)
+    {
+        return true;
+    }
+
+    // if the input is valid, we can assume that this is the first run of this advanceable
+    if (m_isFirstRun)
+    {
+        generatorInput.mergePointIndex = 0;
+        m_isFirstRun = false;
+    }
 
     // the feedback has been already set in setInput
-
     auto scaledAngularMomentum = MANNGeneratorOutput.angularMomentumTrajectory;
     for (auto& t : scaledAngularMomentum)
     {
@@ -230,13 +242,14 @@ bool CentroidalMPCBlock::advance()
         return false;
     }
 
+    // set the controller output
     m_output.controllerOutput = m_controller.getOutput();
-    m_output.contactPhaseList = MANNGeneratorOutput.phaseList;
 
     return true;
 }
 
 bool CentroidalMPCBlock::isOutputValid() const
 {
-    return m_generator.isOutputValid() && m_controller.isOutputValid();
+    // for the time beeing we assume that the output is always valid
+    return true;
 }

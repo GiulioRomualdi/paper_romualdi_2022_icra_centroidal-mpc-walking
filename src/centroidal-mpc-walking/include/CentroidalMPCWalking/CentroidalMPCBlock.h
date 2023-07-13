@@ -15,8 +15,8 @@
 #include <Eigen/Dense>
 
 #include <BipedalLocomotion/Contacts/ContactPhaseList.h>
-#include <BipedalLocomotion/ML/MANNTrajectoryGenerator.h>
 #include <BipedalLocomotion/ML/MANNAutoregressiveInputBuilder.h>
+#include <BipedalLocomotion/ML/MANNTrajectoryGenerator.h>
 #include <BipedalLocomotion/Math/Wrench.h>
 #include <BipedalLocomotion/ParametersHandler/IParametersHandler.h>
 #include <BipedalLocomotion/ReducedModelControllers/CentroidalMPC.h>
@@ -28,16 +28,12 @@
 namespace CentroidalMPCWalking
 {
 
-struct CentoidalMPCInput
+struct CentroidalMPCInput
 {
     Eigen::Vector3d com;
     Eigen::Vector3d dcom;
     Eigen::Vector3d angularMomentum;
-
     BipedalLocomotion::Math::Wrenchd totalExternalWrench;
-
-    manif::SE3d leftFoot;
-    manif::SE3d rightFoot;
 
     bool isValid{false};
 };
@@ -46,6 +42,8 @@ struct CentroidalMPCOutput
 {
     BipedalLocomotion::ReducedModelControllers::CentroidalMPCOutput controllerOutput;
     BipedalLocomotion::Contacts::ContactPhaseList contactPhaseList;
+
+    bool isValid{false};
 };
 
 } // namespace CentroidalMPCWalking
@@ -53,7 +51,7 @@ struct CentroidalMPCOutput
 namespace CentroidalMPCWalking
 {
 class CentroidalMPCBlock
-    : public BipedalLocomotion::System::Advanceable<CentoidalMPCInput, CentroidalMPCOutput>
+    : public BipedalLocomotion::System::Advanceable<CentroidalMPCInput, CentroidalMPCOutput>
 {
     typename CentroidalMPCBlock::Output m_output;
 

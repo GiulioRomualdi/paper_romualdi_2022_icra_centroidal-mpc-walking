@@ -88,7 +88,7 @@ int main(int argc, char* argv[])
  */
     ///////// centroidal
     auto centoidalMPCBlock = std::make_unique<CentroidalMPCWalking::CentroidalMPCBlock>();
-    if (!centoidalMPCBlock->initialize(handler->getGroup("CENTROIDAL_MPC")))
+    if (!centoidalMPCBlock->initialize(handler->getGroup("TRAJECTORY_ADJUSTMENT")))
     {
         BipedalLocomotion::log()->error("{} Unable to initialize the centoidal mpc block.",
                                         errorPrefix);

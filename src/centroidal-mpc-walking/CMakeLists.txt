@@ -4,8 +4,8 @@
 
 add_centroidal_mpc_walking_application(
   NAME            walking
-  SOURCES         src/Main.cpp src/CentroidalMPCBlock.cpp
-  HEADERS         include/CentroidalMPCWalking/CentroidalMPCBlock.h
+  SOURCES         src/Main.cpp src/CentroidalMPCBlock.cpp src/WholeBodyQPBlock.cpp
+  HEADERS         include/CentroidalMPCWalking/CentroidalMPCBlock.h include/CentroidalMPCWalking/WholeBodyQPBlock.h
   LINK_LIBRARIES  BipedalLocomotion::ParametersHandlerYarpImplementation
                   BipedalLocomotion::RobotInterfaceYarpImplementation
                   BipedalLocomotion::FloatingBaseEstimators
