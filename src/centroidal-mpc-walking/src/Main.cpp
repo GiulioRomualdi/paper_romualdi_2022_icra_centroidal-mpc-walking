@@ -6,7 +6,7 @@
  */
 
 #include <CentroidalMPCWalking/CentroidalMPCBlock.h>
-// #include <CentroidalMPCWalking/WholeBodyQPBlock.h>
+#include <CentroidalMPCWalking/WholeBodyQPBlock.h>
 
 #include <BipedalLocomotion/ParametersHandler/YarpImplementation.h>
 #include <BipedalLocomotion/System/AdvanceableRunner.h>
@@ -38,17 +38,17 @@ int main(int argc, char* argv[])
         return EXIT_FAILURE;
     }
 
-    std::string outcome;
-    while (true)
-    {
-        BipedalLocomotion::log()->info("[main] Do you want to start the experiment [y|n]?");
-        std::cin >> outcome;
+    // std::string outcome;
+    // while (true)
+    // {
+    //     BipedalLocomotion::log()->info("[main] Do you want to start the experiment [y|n]?");
+    //     std::cin >> outcome;
 
-        if (outcome == "y")
-            break;
-        if (outcome == "n")
-            return EXIT_SUCCESS;
-    }
+    //     if (outcome == "y")
+    //         break;
+    //     if (outcome == "n")
+    //         return EXIT_SUCCESS;
+    // }
     // prepare and configure the resource finder
     yarp::os::ResourceFinder& rf = yarp::os::ResourceFinder::getResourceFinderSingleton();
 
@@ -59,7 +59,7 @@ int main(int argc, char* argv[])
     handler->set(rf);
 
     // create the module
-/*     auto wholeBodyQPBlock = std::make_unique<CentroidalMPCWalking::WholeBodyQPBlock>();
+    auto wholeBodyQPBlock = std::make_unique<CentroidalMPCWalking::WholeBodyQPBlock>();
     if (!wholeBodyQPBlock->initialize(handler))
     {
         BipedalLocomotion::log()->error("{} Unable to initialize the whole body block.",
@@ -85,7 +85,7 @@ int main(int argc, char* argv[])
     wholeBodyRunner.setInputResource(input0);
     wholeBodyRunner.setOutputResource(output0);
     wholeBodyRunner.setAdvanceable(std::move(wholeBodyQPBlock));
- */
+
     ///////// centroidal
     auto centoidalMPCBlock = std::make_unique<CentroidalMPCWalking::CentroidalMPCBlock>();
     if (!centoidalMPCBlock->initialize(handler->getGroup("TRAJECTORY_ADJUSTMENT")))
@@ -105,23 +105,23 @@ int main(int argc, char* argv[])
         return EXIT_FAILURE;
     }
 
-    // centroidalMPCRunner.setInputResource(output0);
-    // centroidalMPCRunner.setOutputResource(input0);
+    centroidalMPCRunner.setInputResource(output0);
+    centroidalMPCRunner.setOutputResource(input0);
     centroidalMPCRunner.setAdvanceable(std::move(centoidalMPCBlock));
 
     BipedalLocomotion::System::handleQuitSignals([&]() {
         centroidalMPCRunner.stop();
-/*         wholeBodyRunner.stop(); */
+        /*         wholeBodyRunner.stop(); */
     });
 
     // Run the threads
     BipedalLocomotion::System::Barrier barrier(2);
 
-/*     auto threadWBC = wholeBodyRunner.run(barrier); */
+    auto threadWBC = wholeBodyRunner.run(barrier);
     auto threadMPC = centroidalMPCRunner.run(barrier);
 
     // check if the blocks are alive
-    while (/* wholeBodyRunner.isRunning() && */ centroidalMPCRunner.isRunning())
+    while (wholeBodyRunner.isRunning() && centroidalMPCRunner.isRunning())
     {
         using namespace std::chrono_literals;
         constexpr auto delay = 250ms;
@@ -132,7 +132,7 @@ int main(int argc, char* argv[])
     }
 
     centroidalMPCRunner.stop();
-    /* wholeBodyRunner.stop(); */
+    wholeBodyRunner.stop();
 
     if (threadMPC.joinable())
     {
@@ -140,11 +140,11 @@ int main(int argc, char* argv[])
         threadMPC = std::thread();
     }
 
-    /* if (threadWBC.joinable())
+    if (threadWBC.joinable())
     {
         threadWBC.join();
         threadWBC = std::thread();
     }
- */
+
     return EXIT_SUCCESS;
 }

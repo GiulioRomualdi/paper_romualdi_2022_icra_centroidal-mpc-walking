@@ -133,7 +133,7 @@ class WholeBodyQPBlock
         std::shared_ptr<const BipedalLocomotion::ParametersHandler::IParametersHandler> handler);
 
     bool instantiateIK(
-        std::shared_ptr<const BipedalLocomotion::ParametersHandler::IParametersHandler> handler);
+        std::weak_ptr<const BipedalLocomotion::ParametersHandler::IParametersHandler> handler);
 
     bool instantiateLeggedOdometry(
         std::shared_ptr<const BipedalLocomotion::ParametersHandler::IParametersHandler> handler,

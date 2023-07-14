@@ -108,11 +108,11 @@ bool WholeBodyQPBlock::instantiateLeggedOdometry(std::shared_ptr<const IParamete
     return true;
 }
 
-bool WholeBodyQPBlock::instantiateIK(std::shared_ptr<const IParametersHandler> handler)
+bool WholeBodyQPBlock::instantiateIK(std::weak_ptr<const IParametersHandler> handler)
 {
     constexpr auto logPrefix = "[WholeBodyQPBlock::instantiateIK]";
 
-    auto getTask = [this, logPrefix](const std::string& taskName, auto task) -> bool {
+    auto getTask = [this, logPrefix](const std::string& taskName, auto& task) -> bool {
         auto ptr = m_IKandTasks.ikProblem.ik->getTask(taskName).lock();
         if (ptr == nullptr)
         {
@@ -122,7 +122,8 @@ bool WholeBodyQPBlock::instantiateIK(std::shared_ptr<const IParametersHandler> h
             return false;
         }
 
-        task = std::dynamic_pointer_cast<typename decltype(task)::element_type>(ptr);
+        // cast the task
+        task = std::dynamic_pointer_cast<typename std::remove_reference<decltype(task)>::type::element_type>(ptr);
         if (task == nullptr)
         {
             BipedalLocomotion::log()->error("{} Unable to cast the task named {} to the expected "
@@ -216,7 +217,11 @@ bool WholeBodyQPBlock::instantiateSwingFootPlanner(std::shared_ptr<const IParame
     }
 
     auto tmp = ptr->clone();
-    tmp->setParameter("sampling_time", m_dT);
+    // todo bug blf
+    /* tmp->setParameter("sampling_time", m_dT); */
+    BipedalLocomotion::log()->warn("{} Instantiating the left foot planner. {}", errorPrefix, tmp->toString());
+
+
     if (!m_leftFootPlanner.initialize(tmp))
     {
         BipedalLocomotion::log()->error("{} Unable to initialize the left foot planner.",
@@ -436,6 +441,30 @@ bool WholeBodyQPBlock::initialize(std::weak_ptr<const IParametersHandler> handle
 
     auto parametersHandler = handler.lock();
 
+    if (parametersHandler == nullptr)
+    {
+        BipedalLocomotion::log()->error("{} The parameter handler is not valid.", logPrefix);
+        return false;
+    }
+
+    auto wholeBodyRunnerHandler = parametersHandler->getGroup("WHOLE_BODY_RUNNER").lock();
+    if (wholeBodyRunnerHandler == nullptr)
+    {
+        BipedalLocomotion::log()->error("{} Unable to find the whole body runner group.",
+                                        logPrefix);
+        return false;
+    }
+
+    // get the sampling time
+    if(!wholeBodyRunnerHandler->getParameter("sampling_time", m_dT))
+    {
+        BipedalLocomotion::log()->error("{} Unable to find the sampling time.", logPrefix);
+        return false;
+    }
+
+    // print the time
+    BipedalLocomotion::log()->info("{} Sampling time: {} s.", logPrefix, m_dT);
+
     BipedalLocomotion::log()->info("{} Create the polydriver.", logPrefix);
     if (!this->createPolydriver(parametersHandler))
     {
@@ -485,7 +514,7 @@ bool WholeBodyQPBlock::initialize(std::weak_ptr<const IParametersHandler> handle
     m_kinDynWithDesired->setFloatingBase("root_link");
     m_kinDynWithMeasured->setFloatingBase("root_link");
 
-    if (!this->instantiateIK(parametersHandler->getGroup("IK").lock()))
+    if (!this->instantiateIK(parametersHandler->getGroup("IK")))
     {
         BipedalLocomotion::log()->error("{} Unable to initialize the IK.", logPrefix);
         return false;
@@ -558,7 +587,7 @@ bool WholeBodyQPBlock::initialize(std::weak_ptr<const IParametersHandler> handle
 
     BipedalLocomotion::log()->info("{} The WholeBodyQPBlock has been configured.", logPrefix);
 
-    return false;
+    return true;
 }
 
 const WholeBodyQPBlock::Output& WholeBodyQPBlock::getOutput() const
@@ -703,6 +732,8 @@ bool WholeBodyQPBlock::advance()
         return true;
     }
 
+    BipedalLocomotion::log()->info("{} Advancing.", errorPrefix);
+
     // from now one we assume that the contact phase list contains a set of contacts
 
     Eigen::Vector2d desiredZMP = Eigen::Vector2d::Zero();
@@ -759,6 +790,11 @@ bool WholeBodyQPBlock::advance()
     }
     m_baseTransform = m_floatingBaseEstimator.getOutput().basePose;
     m_baseVelocity = m_floatingBaseEstimator.getOutput().baseTwist;
+
+
+    // check the base trasform
+    BipedalLocomotion::log()->debug("{} Base transform: \n{}", errorPrefix,
+                                    m_baseTransform.transform().matrix());
 
     /////// update kinDyn
     if (!m_kinDynWithMeasured->setRobotState(m_baseTransform.transform(),
@@ -862,6 +898,7 @@ bool WholeBodyQPBlock::advance()
         m_firstIteration = false;
     }
 
+    
     // the input is now valid so we can update the centroidal dynamics
     if (!m_centroidalSystem.dynamics->setControlInput(
             {m_input.controllerOutput.contacts, m_output.totalExternalWrench}))
@@ -983,6 +1020,8 @@ bool WholeBodyQPBlock::advance()
 
     // advance the time
     m_absoluteTime += m_dT;
+
+    BipedalLocomotion::log()->info("{} Output computed", errorPrefix);
 
     return true;
 }

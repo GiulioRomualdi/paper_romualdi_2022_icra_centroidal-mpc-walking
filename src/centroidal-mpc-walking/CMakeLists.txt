@@ -19,6 +19,8 @@ add_centroidal_mpc_walking_application(
                   BipedalLocomotion::ContactDetectors
                   BipedalLocomotion::SimplifiedModelControllers
                   BipedalLocomotion::ML
+                  BipedalLocomotion::Math
+                  BipedalLocomotion::GenericContainer
   )
 
 install_ini_files(${CMAKE_CURRENT_SOURCE_DIR}/config)

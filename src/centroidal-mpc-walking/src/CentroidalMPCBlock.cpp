@@ -165,6 +165,8 @@ bool CentroidalMPCBlock::advance()
     namespace blf = ::BipedalLocomotion;
     using BipedalLocomotion::log;
 
+    m_output.isValid = false;
+
     constexpr auto logPrefix = "[CentroidalMPCBlock::advance]";
 
     // MANN trajectory generator does not require any input. Indeed we need the output of the
@@ -244,6 +246,7 @@ bool CentroidalMPCBlock::advance()
 
     // set the controller output
     m_output.controllerOutput = m_controller.getOutput();
+    m_output.isValid = true;
 
     return true;
 }
