@@ -41,6 +41,8 @@ using namespace CentroidalMPCWalking;
 using namespace BipedalLocomotion::ParametersHandler;
 using namespace std::chrono_literals;
 
+bool firstbasestimation = true;
+
 bool WholeBodyQPBlock::createKinDyn(const std::string& modelPath,
                                     const std::vector<std::string>& jointLists)
 {
@@ -84,6 +86,13 @@ bool WholeBodyQPBlock::instantiateLeggedOdometry(std::shared_ptr<const IParamete
         return false;
     }
 
+    // print joint list
+    std::cout << "Joint list: " << std::endl;
+    for (const auto& joint : jointLists)
+    {
+        std::cout << joint << std::endl;
+    }
+
     auto tmpKinDyn = std::make_shared<iDynTree::KinDynComputations>();
     if (!tmpKinDyn->loadRobotModel(ml.model()))
     {
@@ -123,7 +132,8 @@ bool WholeBodyQPBlock::instantiateIK(std::weak_ptr<const IParametersHandler> han
         }
 
         // cast the task
-        task = std::dynamic_pointer_cast<typename std::remove_reference<decltype(task)>::type::element_type>(ptr);
+        task = std::dynamic_pointer_cast<
+            typename std::remove_reference<decltype(task)>::type::element_type>(ptr);
         if (task == nullptr)
         {
             BipedalLocomotion::log()->error("{} Unable to cast the task named {} to the expected "
@@ -142,6 +152,8 @@ bool WholeBodyQPBlock::instantiateIK(std::weak_ptr<const IParametersHandler> han
         BipedalLocomotion::log()->error("{} Unable to initialize the IK.", logPrefix);
         return false;
     }
+
+    BipedalLocomotion::log()->info("{}", m_IKandTasks.ikProblem.ik->toString());
 
     return getTask("LEFT_FOOT", m_IKandTasks.leftFootTask)
            && getTask("RIGHT_FOOT", m_IKandTasks.rightFootTask)
@@ -219,8 +231,9 @@ bool WholeBodyQPBlock::instantiateSwingFootPlanner(std::shared_ptr<const IParame
     auto tmp = ptr->clone();
     // todo bug blf
     /* tmp->setParameter("sampling_time", m_dT); */
-    BipedalLocomotion::log()->warn("{} Instantiating the left foot planner. {}", errorPrefix, tmp->toString());
-
+    BipedalLocomotion::log()->warn("{} Instantiating the left foot planner. {}",
+                                   errorPrefix,
+                                   tmp->toString());
 
     if (!m_leftFootPlanner.initialize(tmp))
     {
@@ -283,10 +296,9 @@ bool WholeBodyQPBlock::updateFloatingBase()
         return false;
     }
 
-    if (!m_floatingBaseEstimator
-             .changeFixedFrame(m_fixedFootDetector.getFixedFoot().index,
-                               m_fixedFootDetector.getFixedFoot().pose.quat(),
-                               m_fixedFootDetector.getFixedFoot().pose.translation()))
+    Eigen::Vector3d tmpPose;
+    tmpPose.setZero();
+    if (!m_floatingBaseEstimator.changeFixedFrame(173, manif::SO3d::Identity().quat(), tmpPose))
     {
         BipedalLocomotion::log()->error("{} Unable to change the fixed frame in the base "
                                         "estimator.",
@@ -456,14 +468,11 @@ bool WholeBodyQPBlock::initialize(std::weak_ptr<const IParametersHandler> handle
     }
 
     // get the sampling time
-    if(!wholeBodyRunnerHandler->getParameter("sampling_time", m_dT))
+    if (!wholeBodyRunnerHandler->getParameter("sampling_time", m_dT))
     {
         BipedalLocomotion::log()->error("{} Unable to find the sampling time.", logPrefix);
         return false;
     }
-
-    // print the time
-    BipedalLocomotion::log()->info("{} Sampling time: {} s.", logPrefix, m_dT);
 
     BipedalLocomotion::log()->info("{} Create the polydriver.", logPrefix);
     if (!this->createPolydriver(parametersHandler))
@@ -513,6 +522,8 @@ bool WholeBodyQPBlock::initialize(std::weak_ptr<const IParametersHandler> handle
 
     m_kinDynWithDesired->setFloatingBase("root_link");
     m_kinDynWithMeasured->setFloatingBase("root_link");
+
+    m_robotMass = m_kinDynWithMeasured->model().getTotalMass();
 
     if (!this->instantiateIK(parametersHandler->getGroup("IK")))
     {
@@ -567,23 +578,58 @@ bool WholeBodyQPBlock::initialize(std::weak_ptr<const IParametersHandler> handle
     }
 
     // instantiate the system integrators
+
+    auto initializeDynamicalSystem
+        = [logPrefix, this](auto& dynamicalSystem, const std::string& dynamicalSystemType) -> bool {
+        if (!dynamicalSystem.integrator->setIntegrationStep(this->m_dT))
+        {
+            BipedalLocomotion::log()->error("{} Unable to set the integration step of {}.",
+                                            logPrefix,
+                                            dynamicalSystemType);
+            return false;
+        }
+        if (!dynamicalSystem.integrator->setDynamicalSystem(dynamicalSystem.dynamics))
+        {
+            BipedalLocomotion::log()->error("{} Unable to set the dynamical system of {}.",
+                                            logPrefix,
+                                            dynamicalSystemType);
+            return false;
+        }
+        return true;
+    };
+
     using namespace BipedalLocomotion::ContinuousDynamicalSystem;
     m_floatingBaseSystem.dynamics = std::make_shared<FloatingBaseSystemKinematics>();
     m_floatingBaseSystem.integrator
         = std::make_shared<ForwardEuler<FloatingBaseSystemKinematics>>();
-    m_floatingBaseSystem.integrator->setIntegrationStep(m_dT);
-    m_floatingBaseSystem.integrator->setDynamicalSystem(m_floatingBaseSystem.dynamics);
+    if (!initializeDynamicalSystem(m_floatingBaseSystem, "Floating base system"))
+    {
+        return false;
+    }
 
     m_centroidalSystem.dynamics = std::make_shared<CentroidalDynamics>();
     m_centroidalSystem.integrator = std::make_shared<ForwardEuler<CentroidalDynamics>>();
-    m_centroidalSystem.integrator->setIntegrationStep(m_dT);
-    m_centroidalSystem.integrator->setDynamicalSystem(m_centroidalSystem.dynamics);
+    if (!initializeDynamicalSystem(m_centroidalSystem, "Centroidal system"))
+    {
+        return false;
+    }
 
     m_comSystem.dynamics = std::make_shared<LinearTimeInvariantSystem>();
-    m_comSystem.dynamics->setSystemMatrices(Eigen::Matrix2d::Zero(), Eigen::Matrix2d::Identity());
+    if (!m_comSystem.dynamics->setSystemMatrices(Eigen::Matrix2d::Zero(),
+                                                 Eigen::Matrix2d::Identity()))
+    {
+        BipedalLocomotion::log()->error("{} Unable to set the system matrices of the CoM system.",
+                                        logPrefix);
+        return false;
+    }
     m_comSystem.integrator = std::make_shared<ForwardEuler<LinearTimeInvariantSystem>>();
-    m_comSystem.integrator->setIntegrationStep(m_dT);
-    m_comSystem.integrator->setDynamicalSystem(m_comSystem.dynamics);
+    if (!initializeDynamicalSystem(m_comSystem, "CoM system"))
+    {
+        return false;
+    }
+
+    // open logged data port
+    m_logDataPort.open("/centroidal-mpc/log:o");
 
     BipedalLocomotion::log()->info("{} The WholeBodyQPBlock has been configured.", logPrefix);
 
@@ -669,12 +715,20 @@ bool WholeBodyQPBlock::evaluateZMP(Eigen::Ref<Eigen::Vector2d> zmp)
     return true;
 }
 
-Eigen::Vector2d WholeBodyQPBlock::computeDesiredZMP(
-    const std::map<std::string, BipedalLocomotion::Contacts::DiscreteGeometryContact>& contacts)
+bool WholeBodyQPBlock::computeDesiredZMP(
+    const std::map<std::string, BipedalLocomotion::Contacts::DiscreteGeometryContact>& contacts,
+    Eigen::Ref<Eigen::Vector2d> zmp)
 {
-    Eigen::Vector2d zmp = Eigen::Vector2d::Zero();
     double totalZ = 0;
     Eigen::Vector3d localZMP;
+    localZMP.setZero();
+
+    if (contacts.size() == 0)
+    {
+        BipedalLocomotion::log()->error("[WholeBodyQPBlock::computeDesiredZMP] No contact is "
+                                        "provided.");
+        return false;
+    }
 
     for (const auto& [key, contact] : contacts)
     {
@@ -708,13 +762,22 @@ Eigen::Vector2d WholeBodyQPBlock::computeDesiredZMP(
             } else
             {
                 BipedalLocomotion::log()->error("Problem in evaluated the desired zmp");
+                return false;
             }
         }
     }
 
+    if (totalZ < 0.001)
+    {
+        BipedalLocomotion::log()->error("[WholeBodyQPBlock::computeDesiredZMP] The total "
+                                        "z-component of "
+                                        "contact wrenches is too low.");
+        return false;
+    }
+
     zmp = zmp / totalZ;
 
-    return zmp;
+    return true;
 }
 
 bool WholeBodyQPBlock::advance()
@@ -732,10 +795,7 @@ bool WholeBodyQPBlock::advance()
         return true;
     }
 
-    BipedalLocomotion::log()->info("{} Advancing.", errorPrefix);
-
     // from now one we assume that the contact phase list contains a set of contacts
-
     Eigen::Vector2d desiredZMP = Eigen::Vector2d::Zero();
     Eigen::Vector2d measuredZMP = Eigen::Vector2d::Zero();
 
@@ -791,9 +851,9 @@ bool WholeBodyQPBlock::advance()
     m_baseTransform = m_floatingBaseEstimator.getOutput().basePose;
     m_baseVelocity = m_floatingBaseEstimator.getOutput().baseTwist;
 
-
     // check the base trasform
-    BipedalLocomotion::log()->debug("{} Base transform: \n{}", errorPrefix,
+    BipedalLocomotion::log()->debug("{} Base transform: \n{}",
+                                    errorPrefix,
                                     m_baseTransform.transform().matrix());
 
     /////// update kinDyn
@@ -839,10 +899,10 @@ bool WholeBodyQPBlock::advance()
 
     // TODO (Giulio): here we added a threshold probably it should be removed or better set as a
     // configuration parameter
-    if (m_output.totalExternalWrench.force().norm() < 30)
-    {
-        m_output.totalExternalWrench.setZero();
-    }
+    // if (m_output.totalExternalWrench.force().norm() < 30)
+    // {
+    m_output.totalExternalWrench.setZero();
+    // }
 
     m_output.com = iDynTree::toEigen(m_kinDynWithDesired->getCenterOfMassPosition());
     m_output.dcom = iDynTree::toEigen(m_kinDynWithDesired->getCenterOfMassVelocity());
@@ -860,8 +920,10 @@ bool WholeBodyQPBlock::advance()
     // if this is the first iteration we need to initialize some quantities
     if (m_firstIteration)
     {
+
+        // the mass is assumed to be 1
         if (!m_centroidalSystem.dynamics->setState(
-                {m_output.com, m_output.dcom, m_output.angularMomentum}))
+                {m_output.com, m_output.dcom, m_output.angularMomentum / m_robotMass}))
         {
             BipedalLocomotion::log()->error("{} Unable to set the state for the centroidal "
                                             "dynamics.",
@@ -898,7 +960,6 @@ bool WholeBodyQPBlock::advance()
         m_firstIteration = false;
     }
 
-    
     // the input is now valid so we can update the centroidal dynamics
     if (!m_centroidalSystem.dynamics->setControlInput(
             {m_input.controllerOutput.contacts, m_output.totalExternalWrench}))
@@ -931,7 +992,11 @@ bool WholeBodyQPBlock::advance()
         return false;
     }
 
-    desiredZMP = this->computeDesiredZMP(m_input.controllerOutput.contacts);
+    if (!this->computeDesiredZMP(m_input.controllerOutput.contacts, desiredZMP))
+    {
+        BipedalLocomotion::log()->error("{} Unable to compute the desired zmp.", errorPrefix);
+        return false;
+    }
 
     if (!this->evaluateZMP(measuredZMP))
     {
@@ -956,6 +1021,12 @@ bool WholeBodyQPBlock::advance()
     // }
 
     // ZMP-COM controller
+    if (!m_centroidalSystem.integrator->integrate(0s, m_dT))
+    {
+        BipedalLocomotion::log()->error("{} Unable to integrate the centroidal dynamics.",
+                                        errorPrefix);
+        return false;
+    }
     using namespace BipedalLocomotion::GenericContainer::literals;
     Eigen::Vector3d comdes = m_centroidalSystem.dynamics->getState().get_from_hash<"com_pos"_h>();
     Eigen::Vector3d dcomdes = m_centroidalSystem.dynamics->getState().get_from_hash<"com_vel"_h>();
@@ -981,15 +1052,34 @@ bool WholeBodyQPBlock::advance()
     m_comSystem.integrator->integrate(0s, m_dT);
     comdes.head<2>() = std::get<0>(m_comSystem.integrator->getSolution());
 
-    // set the set points for the IK tasks
-    m_IKandTasks.comTask->setSetPoint(comdes, dcomdes);
-    m_IKandTasks.leftFootTask->setSetPoint(m_leftFootPlanner.getOutput().transform,
-                                           m_leftFootPlanner.getOutput().mixedVelocity);
+    if (!m_IKandTasks.comTask->setSetPoint(comdes, dcomdes))
+    {
+        BipedalLocomotion::log()->error("{} Unable to set the set point for the CoM task.",
+                                        errorPrefix);
+        return false;
+    }
+    if (!m_IKandTasks.leftFootTask->setSetPoint(m_leftFootPlanner.getOutput().transform,
+                                                m_leftFootPlanner.getOutput().mixedVelocity))
+    {
+        BipedalLocomotion::log()->error("{} Unable to set the set point for the left foot task.",
+                                        errorPrefix);
+        return false;
+    }
 
-    m_IKandTasks.rightFootTask->setSetPoint(m_rightFootPlanner.getOutput().transform,
-                                            m_rightFootPlanner.getOutput().mixedVelocity);
+    if (!m_IKandTasks.rightFootTask->setSetPoint(m_rightFootPlanner.getOutput().transform,
+                                                 m_rightFootPlanner.getOutput().mixedVelocity))
+    {
+        BipedalLocomotion::log()->error("{} Unable to set the set point for the right foot task.",
+                                        errorPrefix);
+        return false;
+    }
 
-    m_IKandTasks.chestTask->setSetPoint(manif::SO3d::Identity(), manif::SO3d::Tangent::Zero());
+    if (!m_IKandTasks.chestTask->setSetPoint(manif::SO3d::Identity(), manif::SO3d::Tangent::Zero()))
+    {
+        BipedalLocomotion::log()->error("{} Unable to set the set point for the chest task.",
+                                        errorPrefix);
+        return false;
+    }
 
     // evaluate the IK problem
     if (!m_IKandTasks.ikProblem.ik->advance())
@@ -1018,10 +1108,42 @@ bool WholeBodyQPBlock::advance()
         return false;
     }
 
+    m_output.com = m_centroidalSystem.dynamics->getState().get_from_hash<"com_pos"_h>();
+    m_output.dcom = m_centroidalSystem.dynamics->getState().get_from_hash<"com_vel"_h>();
+    m_output.angularMomentum
+        = m_centroidalSystem.dynamics->getState().get_from_hash<"angular_momentum"_h>();
+
     // advance the time
     m_absoluteTime += m_dT;
 
-    BipedalLocomotion::log()->info("{} Output computed", errorPrefix);
+    BipedalLocomotion::YarpUtilities::VectorsCollection& data = m_logDataPort.prepare();
+    data.vectors.clear();
+    auto populateDataVector = [&](const auto& vector, const std::string& name) {
+        data.vectors[name].assign(vector.data(), vector.data() + vector.size());
+    };
+
+    populateDataVector(iDynTree::toEigen(m_kinDynWithMeasured->getCenterOfMassPosition()), "com::position::measured");
+    populateDataVector(m_output.com, "com::position::integrated");
+    populateDataVector(comdes, "com::position::ik_input");
+    populateDataVector(m_centroidalSystem.dynamics->getState().get_from_hash<"com_pos"_h>(),
+                       "com::position::mpc_output");
+    for (auto& [key, contact] : m_input.controllerOutput.contacts)
+    {
+        populateDataVector(contact.pose.translation(), "contact::" + key + "::position::desired");
+        populateDataVector(contact.pose.quat().coeffs(),
+                           "contact::" + key + "::orientation::desired");
+        int i = 0;
+        for (const auto& corner : contact.corners)
+        {
+            populateDataVector(corner.force,
+                               "contact::" + key + "::corner" + std::to_string(i) + "::force");
+            populateDataVector(corner.position,
+                               "contact::" + key + "::corner" + std::to_string(i) + "::position");
+            i++;
+        }
+    }
+
+    m_logDataPort.write();
 
     return true;
 }

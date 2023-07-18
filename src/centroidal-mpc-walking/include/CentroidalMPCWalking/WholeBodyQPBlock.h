@@ -39,9 +39,9 @@
 #include <BipedalLocomotion/RobotInterface/YarpSensorBridge.h>
 #include <BipedalLocomotion/SimplifiedModelControllers/CoMZMPController.h>
 #include <BipedalLocomotion/System/Advanceable.h>
+#include <BipedalLocomotion/YarpUtilities/VectorsCollection.h>
 
 #include <yarp/os/BufferedPort.h>
-#include <yarp/sig/Vector.h>
 
 #include <CentroidalMPCWalking/CentroidalMPCBlock.h>
 
@@ -54,7 +54,7 @@ class WholeBodyQPBlock
     typename WholeBodyQPBlock::Output m_output;
     typename WholeBodyQPBlock::Input m_input;
     bool m_firstIteration{true};
-
+    double m_robotMass;
     /*     std::string m_robot; /**< Robot name. */
 
     Eigen::VectorXd m_currentJointPos; /**< Current joint positions. */
@@ -62,7 +62,7 @@ class WholeBodyQPBlock
     Eigen::VectorXd m_desJointPos; /**< Current joint positions. */
     Eigen::VectorXd m_desJointVel; /**< Current joint velocities. */
 
-    /* yarp::os::BufferedPort<yarp::sig::Vector> m_robotBasePort; */
+    yarp::os::BufferedPort<BipedalLocomotion::YarpUtilities::VectorsCollection> m_logDataPort;
 
     manif::SE3d m_baseTransform;
     manif::SE3d::Tangent m_baseVelocity;
@@ -156,8 +156,9 @@ class WholeBodyQPBlock
 
     bool evaluateZMP(Eigen::Ref<Eigen::Vector2d> zmp);
 
-    Eigen::Vector2d computeDesiredZMP(
-        const std::map<std::string, BipedalLocomotion::Contacts::DiscreteGeometryContact>& contacts);
+    bool computeDesiredZMP(
+        const std::map<std::string, BipedalLocomotion::Contacts::DiscreteGeometryContact>& contacts,
+        Eigen::Ref<Eigen::Vector2d> zmp);
 
 public:
     bool initialize(std::weak_ptr<const BipedalLocomotion::ParametersHandler::IParametersHandler>

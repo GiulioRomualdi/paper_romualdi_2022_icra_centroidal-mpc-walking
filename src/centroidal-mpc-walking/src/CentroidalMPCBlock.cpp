@@ -11,6 +11,7 @@
 
 #include <BipedalLocomotion/Contacts/ContactListJsonParser.h>
 #include <BipedalLocomotion/Contacts/ContactPhaseList.h>
+#include <BipedalLocomotion/Conversions/ManifConversions.h>
 #include <BipedalLocomotion/Planners/QuinticSpline.h>
 #include <BipedalLocomotion/System/Clock.h>
 #include <BipedalLocomotion/TextLogging/Logger.h>
@@ -19,8 +20,12 @@
 
 #include <CentroidalMPCWalking/CentroidalMPCBlock.h>
 
+#include <iDynTree/Core/EigenHelpers.h>
+
 using namespace CentroidalMPCWalking;
 using namespace BipedalLocomotion::ParametersHandler;
+
+Eigen::Vector3d CoM0;
 
 void updateContactPhaseList(
     const std::map<std::string, BipedalLocomotion::Contacts::PlannedContact>& nextPlannedContacts,
@@ -109,22 +114,6 @@ bool CentroidalMPCBlock::initialize(std::weak_ptr<const IParametersHandler> hand
     }
 
     // set the initial state of mann trajectory generator
-    manif::SE3d basePose = manif::SE3d(Eigen::Vector3d{0, 0, 0.7748},
-                                       Eigen::AngleAxis(0.0, Eigen::Vector3d::UnitY()));
-
-    BipedalLocomotion::Contacts::EstimatedContact leftFoot, rightFoot;
-    leftFoot.isActive = true;
-    leftFoot.name = "left_foot";
-    leftFoot.index = ml.model().getFrameIndex("l_sole");
-    leftFoot.switchTime = 0s;
-    leftFoot.pose = manif::SE3d(Eigen::Vector3d{0, 0.08, 0}, manif::SO3d::Identity());
-
-    rightFoot.isActive = true;
-    rightFoot.name = "right_foot";
-    rightFoot.index = ml.model().getFrameIndex("r_sole");
-    rightFoot.switchTime = 0s;
-    rightFoot.pose = manif::SE3d(Eigen::Vector3d{0, -0.08, 0}, manif::SO3d::Identity());
-
     Eigen::VectorXd jointPositions(26);
     jointPositions << -0.10922017141063572, 0.05081325960010118, 0.06581966291990003,
         -0.0898053099824925, -0.09324922528169599, -0.05110058859172172, -0.11021232812838086,
@@ -134,9 +123,80 @@ bool CentroidalMPCBlock::initialize(std::weak_ptr<const IParametersHandler> hand
         -0.1695472679986807, -0.20799422095574033, 0.045397975984119654, -0.03946672931050908,
         -0.16795588539580256, -0.20911090583076936, 0.0419854257806720;
 
+    iDynTree::KinDynComputations kinDyn;
+    kinDyn.loadRobotModel(ml.model());
+
+    // get the frame associated to l_sole
+    auto lSoleFrame = kinDyn.model().getFrameIndex("l_sole");
+    if (lSoleFrame == iDynTree::FRAME_INVALID_INDEX)
+    {
+        log()->error("{} Unable to find the frame named l_sole.", logPrefix);
+        return false;
+    }
+    auto linkBaseIndex = kinDyn.model().getFrameLink(lSoleFrame);
+    auto linkFrameName = kinDyn.model().getLinkName(linkBaseIndex);
+
+    auto l_foot_H_l_sole = kinDyn.getRelativeTransform(lSoleFrame, linkBaseIndex);
+
+    // set kindybase
+    kinDyn.setFloatingBase(linkFrameName);
+
+    iDynTree::VectorDynSize dummyVel, jointPositionsiDyn;
+    dummyVel.resize(jointPositions.size());
+    jointPositionsiDyn.resize(jointPositions.size());
+    iDynTree::toEigen(jointPositionsiDyn) = jointPositions;
+    dummyVel.zero();
+
+    iDynTree::Vector3 dummyGravity;
+    dummyGravity.zero();
+    kinDyn.setRobotState(l_foot_H_l_sole,
+                         jointPositionsiDyn,
+                         iDynTree::Twist::Zero(),
+                         dummyVel,
+                         dummyGravity);
+
+    BipedalLocomotion::Contacts::EstimatedContact leftFoot, rightFoot;
+
+    leftFoot.isActive = true;
+    leftFoot.name = "left_foot";
+    leftFoot.index = ml.model().getFrameIndex("l_sole");
+    leftFoot.switchTime = 0s;
+    leftFoot.pose = manif::SE3d(Eigen::Vector3d{0, 0.0, 0}, manif::SO3d::Identity());
+
+    rightFoot.isActive = true;
+    rightFoot.name = "right_foot";
+    rightFoot.index = ml.model().getFrameIndex("r_sole");
+    rightFoot.switchTime = 0s;
+    rightFoot.pose
+        = BipedalLocomotion::Conversions::toManifPose(kinDyn.getWorldTransform(rightFoot.index));
+
+    const manif::SE3d basePose
+        = BipedalLocomotion::Conversions::toManifPose(kinDyn.getWorldTransform("root_link"));
+
+    CoM0 = iDynTree::toEigen(kinDyn.getCenterOfMassPosition());
+    BipedalLocomotion::log()->info("{} CoM0: {}", logPrefix, CoM0.transpose());
+
     m_generator.setInitialState(jointPositions, leftFoot, rightFoot, basePose, 0s);
 
     m_joypadPort.open("/centroidal-mpc/joystick:i");
+
+
+    BipedalLocomotion::Contacts::ContactListMap contactListMap;
+    BipedalLocomotion::Contacts::PlannedContact tmp1;
+    tmp1.name = "left_foot";
+    tmp1.pose = leftFoot.pose;
+    tmp1.activationTime = std::chrono::nanoseconds::zero();
+    tmp1.deactivationTime = std::chrono::nanoseconds::max();
+    tmp1.index = leftFoot.index;
+    contactListMap["left_foot"].addContact(tmp1);
+    tmp1.name = "right_foot";
+    tmp1.pose = rightFoot.pose;
+    tmp1.activationTime = std::chrono::nanoseconds::zero();
+    tmp1.deactivationTime = std::chrono::nanoseconds::max();
+    tmp1.index = rightFoot.index;
+    contactListMap["right_foot"].addContact(tmp1);
+    m_output.contactPhaseList.setLists(contactListMap);
+
 
     return true;
 }
@@ -154,10 +214,15 @@ bool CentroidalMPCBlock::setInput(const Input& input)
     }
 
     m_inputValid = input.isValid;
-    return m_controller.setState(input.com,
-                                 input.dcom,
-                                 input.angularMomentum,
-                                 input.totalExternalWrench);
+
+    // the angular momentum needs to be scaled by the robot mass
+    Input scaledInput = input;
+    scaledInput.angularMomentum = input.angularMomentum / m_robotMass;
+
+    return m_controller.setState(scaledInput.com,
+                                 scaledInput.dcom,
+                                 scaledInput.angularMomentum,
+                                 scaledInput.totalExternalWrench);
 }
 
 bool CentroidalMPCBlock::advance()
@@ -203,7 +268,19 @@ bool CentroidalMPCBlock::advance()
 
     // get the contact phase list from MANN generator
     const auto& MANNGeneratorOutput = m_generator.getOutput();
-    m_output.contactPhaseList = MANNGeneratorOutput.phaseList;
+    // m_output.contactPhaseList = MANNGeneratorOutput.phaseList;
+
+    // for (const auto& lists : m_output.contactPhaseList.lists())
+    // {
+    //     for (const auto& contact : lists.second)
+    //     {
+    //         BipedalLocomotion::log()->info("{}, position {}",
+    //                                        contact.name,
+    //                                        contact.pose.translation().transpose());
+    //     }
+
+    //     // print the position in each phase
+    // }
 
     // for the next steps we need a valid input
     if (!m_inputValid)
@@ -222,17 +299,25 @@ bool CentroidalMPCBlock::advance()
     auto scaledAngularMomentum = MANNGeneratorOutput.angularMomentumTrajectory;
     for (auto& t : scaledAngularMomentum)
     {
-        t = t / m_robotMass;
+        t = t / m_robotMass * 0;
     }
 
-    if (!m_controller.setReferenceTrajectory(MANNGeneratorOutput.comTrajectory,
+    auto comTemp = MANNGeneratorOutput.comTrajectory;
+    for (auto& t : comTemp)
+    {
+        t = CoM0;
+    }
+
+
+
+    if (!m_controller.setReferenceTrajectory(comTemp,
                                              scaledAngularMomentum))
     {
         log()->error("{} Unable to set the reference trajectory of the MPC.", logPrefix);
         return false;
     }
 
-    if (!m_controller.setContactPhaseList(MANNGeneratorOutput.phaseList))
+    if (!m_controller.setContactPhaseList(m_output.contactPhaseList))
     {
         log()->error("{} Unable to set the contact list in the MPC.", logPrefix);
         return false;
