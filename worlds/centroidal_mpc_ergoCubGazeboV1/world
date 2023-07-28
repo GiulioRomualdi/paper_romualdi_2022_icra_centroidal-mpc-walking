@@ -2,11 +2,11 @@
 <sdf version="1.4">
   <world name="default">
 
-    <!-- <physics type="ode">
+    <physics type="ode">
       <max_step_size>0.001</max_step_size>
-      <real_time_factor>0.1</real_time_factor>
-      <real_time_update_rate>100</real_time_update_rate>
-    </physics> -->
+      <real_time_factor>0.5</real_time_factor>
+      <real_time_update_rate>500</real_time_update_rate>
+    </physics>
 
     <scene>
       <shadows>false</shadows>
@@ -33,7 +33,7 @@
       </plugin>
       <plugin name='rarm_configuration_override' filename='libgazebo_yarp_configurationoverride.so'>
         <yarpPluginConfigurationOverride plugin_name='controlboard_right_arm_no_hand'> </yarpPluginConfigurationOverride>
-        <initialConfiguration>-0.03946672931050908 -0.16795588539580256 -0.20911090583076936 0.0419854257806720        0         0        0</initialConfiguration>
+        <initialConfiguration>-0.03946672931050908 -0.1695472679986807 -0.20911090583076936 0.0419854257806720        0         0        0</initialConfiguration>
       </plugin>
       <plugin name='lleg_configuration_override' filename='libgazebo_yarp_configurationoverride.so'>
         <yarpPluginConfigurationOverride plugin_name='controlboard_left_leg'> </yarpPluginConfigurationOverride>

@@ -34,6 +34,7 @@ struct CentroidalMPCInput
     Eigen::Vector3d dcom;
     Eigen::Vector3d angularMomentum;
     BipedalLocomotion::Math::Wrenchd totalExternalWrench;
+    std::chrono::nanoseconds currentTime;
 
     bool isValid{false};
 };
@@ -42,6 +43,7 @@ struct CentroidalMPCOutput
 {
     BipedalLocomotion::ReducedModelControllers::CentroidalMPCOutput controllerOutput;
     BipedalLocomotion::Contacts::ContactPhaseList contactPhaseList;
+    std::chrono::nanoseconds currentTime;
 
     bool isValid{false};
 };
@@ -54,6 +56,9 @@ class CentroidalMPCBlock
     : public BipedalLocomotion::System::Advanceable<CentroidalMPCInput, CentroidalMPCOutput>
 {
     typename CentroidalMPCBlock::Output m_output;
+
+    std::chrono::nanoseconds m_dT;
+    std::chrono::nanoseconds m_absoluteTime{std::chrono::nanoseconds::zero()};
 
     BipedalLocomotion::ReducedModelControllers::CentroidalMPC m_controller;
     BipedalLocomotion::ML::MANNAutoregressiveInputBuilder m_generatorInputBuilder;

@@ -277,6 +277,7 @@ bool WholeBodyQPBlock::updateFloatingBase()
     {
         // TODO Please change the signature of setContactStatus
         const auto frameName = m_kinDynWithDesired->model().getFrameName(foot.index);
+
         if (!m_floatingBaseEstimator.setContactStatus(frameName,
                                                       foot.isActive,
                                                       foot.switchTime,
@@ -296,9 +297,10 @@ bool WholeBodyQPBlock::updateFloatingBase()
         return false;
     }
 
-    Eigen::Vector3d tmpPose;
-    tmpPose.setZero();
-    if (!m_floatingBaseEstimator.changeFixedFrame(173, manif::SO3d::Identity().quat(), tmpPose))
+    if (!m_floatingBaseEstimator
+             .changeFixedFrame(m_fixedFootDetector.getFixedFoot().index,
+                               m_fixedFootDetector.getFixedFoot().pose.quat(),
+                               m_fixedFootDetector.getFixedFoot().pose.translation()))
     {
         BipedalLocomotion::log()->error("{} Unable to change the fixed frame in the base "
                                         "estimator.",
@@ -608,7 +610,7 @@ bool WholeBodyQPBlock::initialize(std::weak_ptr<const IParametersHandler> handle
     }
 
     m_centroidalSystem.dynamics = std::make_shared<CentroidalDynamics>();
-    m_centroidalSystem.integrator = std::make_shared<ForwardEuler<CentroidalDynamics>>();
+    m_centroidalSystem.integrator = std::make_shared<RK4<CentroidalDynamics>>();
     if (!initializeDynamicalSystem(m_centroidalSystem, "Centroidal system"))
     {
         return false;
@@ -622,7 +624,7 @@ bool WholeBodyQPBlock::initialize(std::weak_ptr<const IParametersHandler> handle
                                         logPrefix);
         return false;
     }
-    m_comSystem.integrator = std::make_shared<ForwardEuler<LinearTimeInvariantSystem>>();
+    m_comSystem.integrator = std::make_shared<RK4<LinearTimeInvariantSystem>>();
     if (!initializeDynamicalSystem(m_comSystem, "CoM system"))
     {
         return false;
@@ -630,6 +632,9 @@ bool WholeBodyQPBlock::initialize(std::weak_ptr<const IParametersHandler> handle
 
     // open logged data port
     m_logDataPort.open("/centroidal-mpc/log:o");
+
+    m_leftFootPlanner.setTime(m_absoluteTime);
+    m_rightFootPlanner.setTime(m_absoluteTime);
 
     BipedalLocomotion::log()->info("{} The WholeBodyQPBlock has been configured.", logPrefix);
 
@@ -643,6 +648,39 @@ const WholeBodyQPBlock::Output& WholeBodyQPBlock::getOutput() const
 
 bool WholeBodyQPBlock::setInput(const Input& input)
 {
+    BipedalLocomotion::log()
+        ->warn("[WholeBodyQPBlock::setInput] absolute time {}, input time {}.",
+               std::chrono::duration_cast<std::chrono::milliseconds>(m_absoluteTime),
+               std::chrono::duration_cast<std::chrono::milliseconds>(input.currentTime));
+
+    // print the contacts phases
+    for (const auto& [key, list] : input.contactPhaseList.lists())
+    {
+        for (const auto& contact : list)
+        {
+            BipedalLocomotion::log()->debug("[WholeBodyQPBlock::setInput] {} activation {} "
+                                            "deactivation {}.",
+                                            key,
+                                            std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                contact.activationTime),
+                                            std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                contact.deactivationTime));
+        }
+    }
+
+    /*     using namespace std::chrono_literals;
+        if (m_absoluteTime == 0ns)
+        {
+            m_absoluteTime = input.currentTime;
+            m_leftFootPlanner.setTime(m_absoluteTime);
+            m_rightFootPlanner.setTime(m_absoluteTime);
+        }
+
+        if (input.currentTime > m_absoluteTime)
+        {
+            return true;
+        }
+     */
     m_input = input;
     return true;
 }
@@ -786,6 +824,7 @@ bool WholeBodyQPBlock::advance()
 
     bool shouldAdvance = false;
     m_output.isValid = false;
+    m_output.currentTime = m_absoluteTime;
 
     // check if the block should advance
     // in this case we need the contact phase list in order to compute the base position and
@@ -851,11 +890,6 @@ bool WholeBodyQPBlock::advance()
     m_baseTransform = m_floatingBaseEstimator.getOutput().basePose;
     m_baseVelocity = m_floatingBaseEstimator.getOutput().baseTwist;
 
-    // check the base trasform
-    BipedalLocomotion::log()->debug("{} Base transform: \n{}",
-                                    errorPrefix,
-                                    m_baseTransform.transform().matrix());
-
     /////// update kinDyn
     if (!m_kinDynWithMeasured->setRobotState(m_baseTransform.transform(),
                                              m_currentJointPos,
@@ -905,9 +939,8 @@ bool WholeBodyQPBlock::advance()
     // }
 
     m_output.com = iDynTree::toEigen(m_kinDynWithDesired->getCenterOfMassPosition());
-    m_output.dcom = iDynTree::toEigen(m_kinDynWithDesired->getCenterOfMassVelocity());
-    m_output.angularMomentum
-        = iDynTree::toEigen(m_kinDynWithDesired->getCentroidalTotalMomentum().getAngularVec3());
+    m_output.dcom.setZero();
+    m_output.angularMomentum.setZero();
     m_output.isValid = true;
 
     // this is the case in which the input provided by the MPC is not valid so we cannot proceed
@@ -970,6 +1003,17 @@ bool WholeBodyQPBlock::advance()
     }
 
     // we need also to update the swing feet planners
+
+    // print the contact lists stored in the contact phase list
+    /*     for (const auto& [key, list] : m_input.contactPhaseList.lists())
+        {
+            for (const auto& contact : list)
+            {
+                BipedalLocomotion::log()->info("{} Contact list {}, activation time {}, deactivation
+       " "time {}", errorPrefix, key, contact.activationTime, contact.deactivationTime);
+            }
+        }
+     */
     if (!m_leftFootPlanner.setContactList(m_input.contactPhaseList.lists().at("left_foot")))
     {
         BipedalLocomotion::log()->error("{} Unable to set the contact list for the left foot "
@@ -1122,11 +1166,24 @@ bool WholeBodyQPBlock::advance()
         data.vectors[name].assign(vector.data(), vector.data() + vector.size());
     };
 
-    populateDataVector(iDynTree::toEigen(m_kinDynWithMeasured->getCenterOfMassPosition()), "com::position::measured");
+    std::vector<int> fixedFootIndex(1, m_fixedFootDetector.getFixedFoot().index);
+
+    populateDataVector(iDynTree::toEigen(m_kinDynWithMeasured->getCenterOfMassPosition()),
+                       "com::position::measured");
+    populateDataVector(iDynTree::toEigen(m_kinDynWithDesired->getCenterOfMassPosition()),
+                       "com::position::desired");
     populateDataVector(m_output.com, "com::position::integrated");
     populateDataVector(comdes, "com::position::ik_input");
     populateDataVector(m_centroidalSystem.dynamics->getState().get_from_hash<"com_pos"_h>(),
                        "com::position::mpc_output");
+    populateDataVector(m_baseTransform.translation(), "base::position::measured");
+    populateDataVector(m_baseTransform.quat().coeffs(), "base::orientation::measured");
+    populateDataVector(fixedFootIndex, "fixed_foot::index");
+    populateDataVector(m_fixedFootDetector.getFixedFoot().pose.translation(),
+                       "fixed_foot::translation");
+    populateDataVector(m_fixedFootDetector.getFixedFoot().pose.quat().coeffs(),
+                       "fixed_foot::orientation");
+
     for (auto& [key, contact] : m_input.controllerOutput.contacts)
     {
         populateDataVector(contact.pose.translation(), "contact::" + key + "::position::desired");

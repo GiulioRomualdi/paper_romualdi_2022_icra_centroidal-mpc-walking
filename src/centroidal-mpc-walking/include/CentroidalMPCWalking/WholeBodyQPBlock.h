@@ -22,6 +22,7 @@
 #include <BipedalLocomotion/ContinuousDynamicalSystem/FloatingBaseSystemKinematics.h>
 #include <BipedalLocomotion/ContinuousDynamicalSystem/ForwardEuler.h>
 #include <BipedalLocomotion/ContinuousDynamicalSystem/LinearTimeInvariantSystem.h>
+#include <BipedalLocomotion/ContinuousDynamicalSystem/RK4.h>
 #include <BipedalLocomotion/FloatingBaseEstimators/LeggedOdometry.h>
 
 #include <BipedalLocomotion/IK/CoMTask.h>
@@ -103,18 +104,27 @@ class WholeBodyQPBlock
     };
     IKProblemAndTask m_IKandTasks;
 
-    template <typename _Dynamics> struct DynamicsAndIntegrator
+    template <typename _Dynamics, typename _Integrator> struct DynamicsAndIntegrator
     {
-        std::shared_ptr<BipedalLocomotion::ContinuousDynamicalSystem::ForwardEuler<_Dynamics>>
-            integrator;
+        std::shared_ptr<_Integrator> integrator;
         std::shared_ptr<_Dynamics> dynamics;
     };
 
-    DynamicsAndIntegrator<BipedalLocomotion::ContinuousDynamicalSystem::CentroidalDynamics>
+    DynamicsAndIntegrator<BipedalLocomotion::ContinuousDynamicalSystem::CentroidalDynamics,
+                          BipedalLocomotion::ContinuousDynamicalSystem::RK4<
+                              BipedalLocomotion::ContinuousDynamicalSystem::CentroidalDynamics>>
         m_centroidalSystem;
-    DynamicsAndIntegrator<BipedalLocomotion::ContinuousDynamicalSystem::LinearTimeInvariantSystem>
+
+    DynamicsAndIntegrator<
+        BipedalLocomotion::ContinuousDynamicalSystem::LinearTimeInvariantSystem,
+        BipedalLocomotion::ContinuousDynamicalSystem::RK4<
+            BipedalLocomotion::ContinuousDynamicalSystem::LinearTimeInvariantSystem>>
         m_comSystem;
-    DynamicsAndIntegrator<BipedalLocomotion::ContinuousDynamicalSystem::FloatingBaseSystemKinematics>
+
+    DynamicsAndIntegrator<
+        BipedalLocomotion::ContinuousDynamicalSystem::FloatingBaseSystemKinematics,
+        BipedalLocomotion::ContinuousDynamicalSystem::ForwardEuler<
+            BipedalLocomotion::ContinuousDynamicalSystem::FloatingBaseSystemKinematics>>
         m_floatingBaseSystem;
 
     std::shared_ptr<iDynTree::KinDynComputations> m_kinDynWithDesired;
