@@ -320,7 +320,13 @@ bool CentroidalMPCBlock::advance()
         t = t / m_robotMass;
     }
 
-    if (!m_controller.setReferenceTrajectory(MANNGeneratorOutput.comTrajectory,
+    auto reducedHeightCoM = MANNGeneratorOutput.comTrajectory;
+    for (auto& t : reducedHeightCoM)
+    {
+        t[2] = 0.7;
+    }
+
+    if (!m_controller.setReferenceTrajectory(reducedHeightCoM,
                                              scaledAngularMomentum))
     {
         log()->error("{} Unable to set the reference trajectory of the MPC.", logPrefix);
