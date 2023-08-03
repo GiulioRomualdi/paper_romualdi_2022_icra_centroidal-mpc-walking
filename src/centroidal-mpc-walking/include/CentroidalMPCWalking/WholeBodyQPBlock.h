@@ -31,6 +31,7 @@
 #include <BipedalLocomotion/IK/QPInverseKinematics.h>
 #include <BipedalLocomotion/IK/SE3Task.h>
 #include <BipedalLocomotion/IK/SO3Task.h>
+#include <BipedalLocomotion/IK/R3Task.h>
 
 #include <BipedalLocomotion/ParametersHandler/IParametersHandler.h>
 #include <BipedalLocomotion/Planners/QuinticSpline.h>
@@ -100,9 +101,11 @@ class WholeBodyQPBlock
         std::shared_ptr<BipedalLocomotion::IK::SE3Task> rightFootTask;
         std::shared_ptr<BipedalLocomotion::IK::CoMTask> comTask;
         std::shared_ptr<BipedalLocomotion::IK::SO3Task> chestTask;
+        std::shared_ptr<BipedalLocomotion::IK::R3Task> rootTask;
         std::shared_ptr<BipedalLocomotion::IK::JointTrackingTask> regularizationTask;
     };
     IKProblemAndTask m_IKandTasks;
+    Eigen::Vector3d m_rootLinkOffset;
 
     template <typename _Dynamics, typename _Integrator> struct DynamicsAndIntegrator
     {

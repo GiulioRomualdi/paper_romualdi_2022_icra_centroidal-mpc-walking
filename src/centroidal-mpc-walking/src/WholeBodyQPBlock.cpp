@@ -159,7 +159,8 @@ bool WholeBodyQPBlock::instantiateIK(std::weak_ptr<const IParametersHandler> han
            && getTask("RIGHT_FOOT", m_IKandTasks.rightFootTask)
            && getTask("COM", m_IKandTasks.comTask) //
            && getTask("CHEST", m_IKandTasks.chestTask)
-           && getTask("JOINT_REGULARIZATION", m_IKandTasks.regularizationTask);
+           && getTask("JOINT_REGULARIZATION", m_IKandTasks.regularizationTask)
+           && getTask("ROOT_TASK", m_IKandTasks.rootTask);
 }
 
 bool WholeBodyQPBlock::initializeRobotControl(std::shared_ptr<const IParametersHandler> handler)
@@ -231,10 +232,6 @@ bool WholeBodyQPBlock::instantiateSwingFootPlanner(std::shared_ptr<const IParame
     auto tmp = ptr->clone();
     // todo bug blf
     /* tmp->setParameter("sampling_time", m_dT); */
-    BipedalLocomotion::log()->warn("{} Instantiating the left foot planner. {}",
-                                   errorPrefix,
-                                   tmp->toString());
-
     if (!m_leftFootPlanner.initialize(tmp))
     {
         BipedalLocomotion::log()->error("{} Unable to initialize the left foot planner.",
@@ -648,11 +645,6 @@ const WholeBodyQPBlock::Output& WholeBodyQPBlock::getOutput() const
 
 bool WholeBodyQPBlock::setInput(const Input& input)
 {
-    BipedalLocomotion::log()
-        ->warn("[WholeBodyQPBlock::setInput] absolute time {}, input time {}.",
-               std::chrono::duration_cast<std::chrono::milliseconds>(m_absoluteTime),
-               std::chrono::duration_cast<std::chrono::milliseconds>(input.currentTime));
-
     // print the contacts phases
     for (const auto& [key, list] : input.contactPhaseList.lists())
     {
@@ -990,6 +982,9 @@ bool WholeBodyQPBlock::advance()
             return false;
         }
 
+        m_rootLinkOffset = iDynTree::toEigen(m_kinDynWithMeasured->getWorldTransform("root_link").getPosition()) -
+                           m_output.com;
+
         m_firstIteration = false;
     }
 
@@ -1030,9 +1025,16 @@ bool WholeBodyQPBlock::advance()
     }
 
     // advance the feet planners
-    if (!m_leftFootPlanner.advance() || !m_rightFootPlanner.advance())
+    if (!m_leftFootPlanner.advance())
     {
-        BipedalLocomotion::log()->error("{} Unable to advance the feet planners.", errorPrefix);
+        BipedalLocomotion::log()->error("{} Unable to advance the left foot planner.", errorPrefix);
+        return false;
+    }
+
+    if (!m_rightFootPlanner.advance())
+    {
+        BipedalLocomotion::log()->error("{} Unable to advance the right foot planner.",
+                                        errorPrefix);
         return false;
     }
 
@@ -1102,6 +1104,15 @@ bool WholeBodyQPBlock::advance()
                                         errorPrefix);
         return false;
     }
+
+    Eigen::Vector3d rootlinkPos = comdes + m_rootLinkOffset;
+    if (!m_IKandTasks.rootTask->setSetPoint(rootlinkPos, dcomdes))
+    {
+        BipedalLocomotion::log()->error("{} Unable to set the set point for the CoM task.",
+                                        errorPrefix);
+        return false;
+    }
+
     if (!m_IKandTasks.leftFootTask->setSetPoint(m_leftFootPlanner.getOutput().transform,
                                                 m_leftFootPlanner.getOutput().mixedVelocity))
     {
@@ -1183,6 +1194,15 @@ bool WholeBodyQPBlock::advance()
                        "fixed_foot::translation");
     populateDataVector(m_fixedFootDetector.getFixedFoot().pose.quat().coeffs(),
                        "fixed_foot::orientation");
+
+    populateDataVector(m_leftFootPlanner.getOutput().transform.translation(),
+                       "left_foot::position::desired");
+    populateDataVector(m_leftFootPlanner.getOutput().transform.quat().coeffs(),
+                       "left_foot::orientation::desired");
+    populateDataVector(m_rightFootPlanner.getOutput().transform.translation(),
+                       "right_foot::position::desired");
+    populateDataVector(m_rightFootPlanner.getOutput().transform.quat().coeffs(),
+                       "right_foot::orientation::desired");
 
     for (auto& [key, contact] : m_input.controllerOutput.contacts)
     {
