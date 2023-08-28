@@ -43,7 +43,10 @@ struct CentroidalMPCOutput
 {
     BipedalLocomotion::ReducedModelControllers::CentroidalMPCOutput controllerOutput;
     BipedalLocomotion::Contacts::ContactPhaseList contactPhaseList;
-    std::chrono::nanoseconds currentTime;
+    std::chrono::nanoseconds currentTime{std::chrono::nanoseconds::zero()};
+    std::chrono::nanoseconds mpcComputationTime{std::chrono::nanoseconds::zero()};
+    std::chrono::nanoseconds adherentComputationTime{std::chrono::nanoseconds::zero()};
+    Eigen::Vector3d comMANN;
 
     bool isValid{false};
 };

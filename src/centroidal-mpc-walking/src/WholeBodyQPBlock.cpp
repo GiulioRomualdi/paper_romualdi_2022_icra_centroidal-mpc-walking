@@ -982,8 +982,9 @@ bool WholeBodyQPBlock::advance()
             return false;
         }
 
-        m_rootLinkOffset = iDynTree::toEigen(m_kinDynWithMeasured->getWorldTransform("root_link").getPosition()) -
-                           m_output.com;
+        m_rootLinkOffset
+            = iDynTree::toEigen(m_kinDynWithMeasured->getWorldTransform("root_link").getPosition())
+              - m_output.com;
 
         m_firstIteration = false;
     }
@@ -1184,6 +1185,7 @@ bool WholeBodyQPBlock::advance()
     populateDataVector(iDynTree::toEigen(m_kinDynWithDesired->getCenterOfMassPosition()),
                        "com::position::desired");
     populateDataVector(m_output.com, "com::position::integrated");
+    populateDataVector(m_input.comMANN, "com::position::mann");
     populateDataVector(comdes, "com::position::ik_input");
     populateDataVector(m_centroidalSystem.dynamics->getState().get_from_hash<"com_pos"_h>(),
                        "com::position::mpc_output");
@@ -1203,6 +1205,12 @@ bool WholeBodyQPBlock::advance()
                        "right_foot::position::desired");
     populateDataVector(m_rightFootPlanner.getOutput().transform.quat().coeffs(),
                        "right_foot::orientation::desired");
+    populateDataVector(std::array<double, 1>{std::chrono::duration<double>(m_input.mpcComputationTime)
+                                                 .count()},
+                       "computation_time::CentroidalMPC");
+    populateDataVector(std::array<double, 1>{std::chrono::duration<double>(m_input.adherentComputationTime)
+                                                 .count()},
+                       "computation_time::AdherentMPC");
 
     for (auto& [key, contact] : m_input.controllerOutput.contacts)
     {

@@ -211,9 +211,6 @@ bool CentroidalMPCBlock::initialize(std::weak_ptr<const IParametersHandler> hand
     m_joypadPort.open("/centroidal-mpc/joystick:i");
 
     m_directionalInput.motionDirection.setZero();
-    m_directionalInput.motionDirection[0] = 1;
-    m_directionalInput.facingDirection[0] = 1;
-
     m_directionalInput.facingDirection.setZero();
 
     return true;
@@ -226,12 +223,12 @@ const CentroidalMPCBlock::Output& CentroidalMPCBlock::getOutput() const
 
 bool CentroidalMPCBlock::setInput(const Input& input)
 {
+    m_inputValid = input.isValid;
+
     if (!input.isValid)
     {
         return true;
     }
-
-    m_inputValid = input.isValid;
 
     // the angular momentum needs to be scaled by the robot mass
     Input scaledInput = input;
@@ -248,6 +245,8 @@ bool CentroidalMPCBlock::advance()
     namespace blf = ::BipedalLocomotion;
     using BipedalLocomotion::log;
 
+    auto tic = BipedalLocomotion::clock().now();
+
     m_output.isValid = false;
 
     constexpr auto logPrefix = "[CentroidalMPCBlock::advance]";
@@ -262,8 +261,6 @@ bool CentroidalMPCBlock::advance()
     yarp::sig::Vector* tmp = m_joypadPort.read(false);
     if (tmp != nullptr && tmp->size() == 4)
     {
-        BipedalLocomotion::log()->warn("joypad {}", tmp->toString());
-
         m_directionalInput.motionDirection << tmp->operator()(0), tmp->operator()(1);
         m_directionalInput.facingDirection << tmp->operator()(2), tmp->operator()(3);
     }
@@ -317,7 +314,7 @@ bool CentroidalMPCBlock::advance()
     auto scaledAngularMomentum = MANNGeneratorOutput.angularMomentumTrajectory;
     for (auto& t : scaledAngularMomentum)
     {
-        t = t / m_robotMass;
+        t = t / m_robotMass / 5;
     }
 
     auto reducedHeightCoM = MANNGeneratorOutput.comTrajectory;
@@ -326,8 +323,13 @@ bool CentroidalMPCBlock::advance()
         t[2] = 0.7;
     }
 
-    if (!m_controller.setReferenceTrajectory(reducedHeightCoM,
-                                             scaledAngularMomentum))
+    m_output.comMANN = reducedHeightCoM.front();
+
+    auto toc = BipedalLocomotion::clock().now();
+    m_output.adherentComputationTime = toc - tic;
+    tic = toc;
+
+    if (!m_controller.setReferenceTrajectory(reducedHeightCoM, scaledAngularMomentum))
     {
         log()->error("{} Unable to set the reference trajectory of the MPC.", logPrefix);
         return false;
@@ -349,6 +351,7 @@ bool CentroidalMPCBlock::advance()
     m_output.controllerOutput = m_controller.getOutput();
     m_output.isValid = true;
     m_output.currentTime = m_absoluteTime;
+    m_output.mpcComputationTime = BipedalLocomotion::clock().now() - tic;
 
     m_isFirstRun = false;
 
