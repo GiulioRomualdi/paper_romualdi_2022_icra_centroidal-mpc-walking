@@ -47,6 +47,7 @@ struct CentroidalMPCOutput
     std::chrono::nanoseconds mpcComputationTime{std::chrono::nanoseconds::zero()};
     std::chrono::nanoseconds adherentComputationTime{std::chrono::nanoseconds::zero()};
     Eigen::Vector3d comMANN;
+    Eigen::VectorXd regularizedJoints;
 
     bool isValid{false};
 };

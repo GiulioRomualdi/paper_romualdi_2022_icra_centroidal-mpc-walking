@@ -1094,6 +1094,15 @@ bool WholeBodyQPBlock::advance()
         return false;
     }
 
+    // TODO this can be provided by MANN
+    if (!m_IKandTasks.regularizationTask->setSetPoint(m_input.regularizedJoints))
+    {
+        BipedalLocomotion::log()->error("{} Unable to set the set point for the "
+                                        "regularization task.",
+                                        errorPrefix);
+        return false;
+    }
+
     dcomdes.head<2>() = m_CoMZMPController.getOutput();
     m_comSystem.dynamics->setControlInput({dcomdes.head<2>()});
     m_comSystem.integrator->integrate(0s, m_dT);
@@ -1205,10 +1214,12 @@ bool WholeBodyQPBlock::advance()
                        "right_foot::position::desired");
     populateDataVector(m_rightFootPlanner.getOutput().transform.quat().coeffs(),
                        "right_foot::orientation::desired");
-    populateDataVector(std::array<double, 1>{std::chrono::duration<double>(m_input.mpcComputationTime)
+    populateDataVector(std::array<double, 1>{std::chrono::duration<double>(
+                                                 m_input.mpcComputationTime)
                                                  .count()},
                        "computation_time::CentroidalMPC");
-    populateDataVector(std::array<double, 1>{std::chrono::duration<double>(m_input.adherentComputationTime)
+    populateDataVector(std::array<double, 1>{std::chrono::duration<double>(
+                                                 m_input.adherentComputationTime)
                                                  .count()},
                        "computation_time::AdherentMPC");
 

@@ -303,7 +303,7 @@ bool CentroidalMPCBlock::advance()
     // get the contact phase list from MANN generator
     const auto& MANNGeneratorOutput = m_generator.getOutput();
     m_output.contactPhaseList = MANNGeneratorOutput.phaseList;
-
+    m_output.regularizedJoints = MANNGeneratorOutput.jointPositions.front();
     // for the next steps we need a valid input
     if (!m_inputValid)
     {
