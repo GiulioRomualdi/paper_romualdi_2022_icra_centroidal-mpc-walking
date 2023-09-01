@@ -27,18 +27,85 @@ using namespace BipedalLocomotion::ParametersHandler;
 
 Eigen::Vector3d CoM0;
 
-void updateContactPhaseList(
-    const std::map<std::string, BipedalLocomotion::Contacts::PlannedContact>& nextPlannedContacts,
-    BipedalLocomotion::Contacts::ContactPhaseList& phaseList)
+BipedalLocomotion::Contacts::ContactPhaseList
+updateContactPhaseList(const std::chrono::nanoseconds& currentTime,
+                       const BipedalLocomotion::Contacts::ContactPhaseList& mannPhaseList,
+                       const BipedalLocomotion::Contacts::ContactPhaseList& mpcPhaseList)
 {
-    auto newList = phaseList.lists();
-    for (const auto& [key, contact] : nextPlannedContacts)
+    BipedalLocomotion::Contacts::ContactPhaseList contactPhaseList;
+    BipedalLocomotion::Contacts::ContactListMap contactListMap;
+
+    // auto printContactList = [](const BipedalLocomotion::Contacts::ContactList& contactList) {
+    //     for (const auto& contact : contactList)
+    //     {
+    //         BipedalLocomotion::log()->info("name: {}, activation time: {}, deactivation time: {},
+    //         "
+    //                                        "pose {}",
+    //                                        contact.name,
+    //                                        std::chrono::duration_cast<std::chrono::milliseconds>(
+    //                                            contact.activationTime),
+    //                                        std::chrono::duration_cast<std::chrono::milliseconds>(
+    //                                            contact.deactivationTime),
+    //                                        contact.pose.coeffs().transpose());
+    //     }
+    // };
+
+    // BipedalLocomotion::log()->warn("MANN phase list. time {}",
+    //                                std::chrono::duration_cast<std::chrono::milliseconds>(
+    //                                    currentTime));
+    // for (const auto& [name, contactList] : mannPhaseList.lists())
+    // {
+    //     printContactList(contactList);
+    // }
+
+    // BipedalLocomotion::log()->warn("MPC phase list. time {}",
+    //                                std::chrono::duration_cast<std::chrono::milliseconds>(
+    //                                    currentTime));
+    // for (const auto& [name, contactList] : mpcPhaseList.lists())
+    // {
+    //     printContactList(contactList);
+    // }
+
+    for (const auto& [name, contactList] : mannPhaseList.lists())
     {
-        auto it = newList.at(key).getPresentContact(contact.activationTime);
-        newList.at(key).editContact(it, contact);
+        // get the index of the current contact in the mann phase list
+        auto mannPresentContact = contactList.getPresentContact(currentTime);
+        for (auto it = std::next(mannPresentContact); it != contactList.cend(); ++it)
+        {
+            contactListMap[name].addContact(*it);
+        }
+
+        // get the index of the current contact in the mpc phase list
+        const auto& mpcList = mpcPhaseList.lists().at(name);
+        auto mpcPresentContact = mpcList.getPresentContact(currentTime);
+
+        for (auto it = mpcList.begin(); it != mpcPresentContact; ++it)
+        {
+            contactListMap[name].addContact(*it);
+        }
+
+        // for the current we take the time of mann and the pose of the MPC
+        // this is required since the deactivation time may changed
+        if (mpcPresentContact != mpcList.cend())
+        {
+            auto contact = *mpcPresentContact;
+            contact.activationTime = (*mannPresentContact).activationTime;
+            contact.deactivationTime = (*mannPresentContact).deactivationTime;
+            contactListMap[name].addContact(contact);
+        }
     }
 
-    phaseList.setLists(newList);
+    contactPhaseList.setLists(contactListMap);
+
+    // BipedalLocomotion::log()->warn("Updated phase list. time {}",
+    //                                std::chrono::duration_cast<std::chrono::milliseconds>(
+    //                                    currentTime));
+    // for (const auto& [name, contactList] : contactPhaseList.lists())
+    // {
+    //     printContactList(contactList);
+    // }
+
+    return contactPhaseList;
 }
 
 bool CentroidalMPCBlock::initialize(std::weak_ptr<const IParametersHandler> handler)
@@ -121,17 +188,43 @@ bool CentroidalMPCBlock::initialize(std::weak_ptr<const IParametersHandler> hand
 
     // set the initial state of mann trajectory generator
     Eigen::VectorXd jointPositions(26);
-    jointPositions << -0.10922017141063572, 0.05081325960010118, 0.06581966291990003,
-        -0.0898053099824925, -0.09324922528169599, -0.05110058859172172, // left leg
-        -0.11021232812838086, 0.054291515925228385, 0.0735575862560208, -0.09509332143185895,
-        -0.09833823347493076, -0.05367281245082792, // right leg
-        0.1531558711397399, -0.001030634273454133, 0.0006584764419034815, // torso
-        -0.0016821925351926288, -0.004284529460797688, 0.030389771690123243, // head
-        -0.040592118429752494, -0.1695472679986807, -0.20799422095574033,
-        0.045397975984119654, // left arm
-        -0.03946672931050908, -0.16795588539580256, -0.20911090583076936,
-        0.0419854257806720; // right
-                            // arm
+    // jointPositions << -0.09935663695085467, 0.025701155059457442, 0.06534184984184833,
+    //     -0.08227673039926048, -0.07768761174843312, -0.024315843233342373, -0.11525704616838933,
+    //     0.02478877256772321, 0.05046307803997472, -0.08762109045807909, -0.10031852516392248,
+    //     -0.025565627238000203, 0.16487824979762272, 0.0030093422556509227, -0.010453910438339882,
+    //     -0.003975671198541142, -0.004306264052024712, 0.02768477434088547, -0.05625823587699814,
+    //     0.09999973925655095, -0.21065705479250768, 0.015695286263621544, -0.0647162232623409,
+    //     0.10000197803987905, -0.21257567597757412, -0.003282499516478188;
+
+    jointPositions <<
+        -0.1083405028191962,
+        0.01464940967892403, 0.07062119719508, -0.10289331748217925, -0.1012132490914801,
+        -0.0173038389436336, -0.11275167823891682, 0.03667259663921431, 0.05493886524271771,
+        -0.09055099895926208, -0.09278315719945165, -0.03478220710451874, 0.15267533871086064,
+        0.003451022449904091, -0.017515644863920408, -0.0020115451190194367, 0.0014601683787918676,
+        0.011565481804382874, -0.04759409393252947, 0.10000590836596246, -0.19197253684934223,
+        0.05394598490420893, -0.04704542789138096, 0.09997832901610988, -0.20382346126939987,
+        -0.008043248437166084;
+
+    // jointPositions << -0.1046405016025761, 0.017001975000216298, 0.05860553979299023,
+    //     -0.10861521376740862, -0.10469989126931348, -0.017162796031807485, -0.10555041888916736,
+    //     0.027253879470372736, 0.05886380122392785, -0.09220682518818205, -0.08923763315828329,
+    //     -0.026626646132658194, 0.16448252889206036, 0.0008976397176696274, -0.004168695848377414,
+    //     -0.003024068405504912, -0.003051667477044264, 0.02620836750592551, -0.05091593006812735,
+    //     0.09999862602765555, -0.20693304218868638, 0.0284961484128734, -0.0524330311572014,
+    //     0.09999598464167686, -0.2124976706557769, 0.00869636757561082;
+
+    // jointPositions << -0.10922017141063572, 0.05081325960010118, 0.06581966291990003,
+    //     -0.0898053099824925, -0.09324922528169599, -0.05110058859172172, // left leg
+    //     -0.11021232812838086, 0.054291515925228385, 0.0735575862560208, -0.09509332143185895,
+    //     -0.09833823347493076, -0.05367281245082792, // right leg
+    //     0.1531558711397399, -0.001030634273454133, 0.0006584764419034815, // torso
+    //     -0.0016821925351926288, -0.004284529460797688, 0.030389771690123243, // head
+    //     -0.040592118429752494, -0.1695472679986807, -0.20799422095574033,
+    //     0.045397975984119654, // left arm
+    //     -0.03946672931050908, -0.16795588539580256, -0.20911090583076936,
+    //     0.0419854257806720; // right
+    //                         // arm
 
     iDynTree::KinDynComputations kinDyn;
     kinDyn.loadRobotModel(ml.model());
@@ -212,6 +305,11 @@ bool CentroidalMPCBlock::initialize(std::weak_ptr<const IParametersHandler> hand
 
     m_directionalInput.motionDirection.setZero();
     m_directionalInput.facingDirection.setZero();
+
+    BipedalLocomotion::log()->info("{} Right foot pose {}.", logPrefix, rightFoot.pose.coeffs().transpose());
+    BipedalLocomotion::log()->info("{} Left foot pose {}.", logPrefix, leftFoot.pose.coeffs().transpose());
+    BipedalLocomotion::log()->info("{} Initialization completed.", logPrefix);
+
 
     return true;
 }
@@ -302,7 +400,12 @@ bool CentroidalMPCBlock::advance()
 
     // get the contact phase list from MANN generator
     const auto& MANNGeneratorOutput = m_generator.getOutput();
-    m_output.contactPhaseList = MANNGeneratorOutput.phaseList;
+
+    if (m_isFirstRun)
+    {
+        m_output.contactPhaseList = MANNGeneratorOutput.phaseList;
+    }
+
     m_output.regularizedJoints = MANNGeneratorOutput.jointPositions.front();
     // for the next steps we need a valid input
     if (!m_inputValid)
@@ -335,7 +438,18 @@ bool CentroidalMPCBlock::advance()
         return false;
     }
 
-    if (!m_controller.setContactPhaseList(m_output.contactPhaseList))
+    BipedalLocomotion::Contacts::ContactPhaseList contactPhaseList;
+    if (!m_isFirstRun)
+    {
+        contactPhaseList = updateContactPhaseList(m_absoluteTime,
+                                                  MANNGeneratorOutput.phaseList,
+                                                  m_controller.getOutput().contactPhaseList);
+    } else
+    {
+        contactPhaseList = MANNGeneratorOutput.phaseList;
+    }
+
+    if (!m_controller.setContactPhaseList(contactPhaseList))
     {
         log()->error("{} Unable to set the contact list in the MPC.", logPrefix);
         return false;
@@ -352,6 +466,8 @@ bool CentroidalMPCBlock::advance()
     m_output.isValid = true;
     m_output.currentTime = m_absoluteTime;
     m_output.mpcComputationTime = BipedalLocomotion::clock().now() - tic;
+    m_output.contactPhaseList = m_controller.getOutput().contactPhaseList;
+    m_output.mannContactPhaseList = MANNGeneratorOutput.phaseList;
 
     m_isFirstRun = false;
 
