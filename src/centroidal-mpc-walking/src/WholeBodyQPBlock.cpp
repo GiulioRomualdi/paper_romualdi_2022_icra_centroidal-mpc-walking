@@ -907,6 +907,8 @@ bool WholeBodyQPBlock::advance()
         return false;
     }
 
+    m_output.totalExternalWrench.setZero();
+
     // prepare the output for the MPC
     for (auto& [key, value] : m_externalContactWrenches)
     {
@@ -923,12 +925,17 @@ bool WholeBodyQPBlock::advance()
         m_output.totalExternalWrench += rotation * value.wrench;
     }
 
+    m_output.totalExternalWrench.force() /= m_robotMass;
+    m_output.totalExternalWrench.torque() /= m_robotMass;
+
     // TODO (Giulio): here we added a threshold probably it should be removed or better set as a
     // configuration parameter
-    // if (m_output.totalExternalWrench.force().norm() < 30)
+    // if (m_output.totalExternalWrench.force().norm() < 1.5)
     // {
-    m_output.totalExternalWrench.setZero();
-    // }
+        m_output.totalExternalWrench.setZero();
+    // 
+
+    // update the kinematics
 
     m_output.com = iDynTree::toEigen(m_kinDynWithDesired->getCenterOfMassPosition());
     m_output.dcom.setZero();
@@ -1094,7 +1101,7 @@ bool WholeBodyQPBlock::advance()
         return false;
     }
 
-    // TODO this can be provided by MANN
+     // TODO this can be provided by MANN
     if (!m_IKandTasks.regularizationTask->setSetPoint(m_input.regularizedJoints))
     {
         BipedalLocomotion::log()->error("{} Unable to set the set point for the "
@@ -1178,9 +1185,6 @@ bool WholeBodyQPBlock::advance()
     m_output.angularMomentum
         = m_centroidalSystem.dynamics->getState().get_from_hash<"angular_momentum"_h>();
 
-    // advance the time
-    m_absoluteTime += m_dT;
-
     BipedalLocomotion::YarpUtilities::VectorsCollection& data = m_logDataPort.prepare();
     data.vectors.clear();
     auto populateDataVector = [&](const auto& vector, const std::string& name) {
@@ -1239,7 +1243,24 @@ bool WholeBodyQPBlock::advance()
         }
     }
 
+    for (auto& [key, contactList] : m_input.mannContactPhaseList.lists())
+    {
+        auto contact = contactList.getPresentContact(m_absoluteTime);
+        if (contact == contactList.cend())
+        {
+            BipedalLocomotion::log()->info("{} Contact {} is not active.", errorPrefix, key);
+            continue;
+        }
+
+        populateDataVector(contact->pose.translation(), "contact::" + key + "::position::nominal");
+        populateDataVector(contact->pose.quat().coeffs(),
+                           "contact::" + key + "::orientation::nominal");
+    }
+
     m_logDataPort.write();
+
+    // advance the time
+    m_absoluteTime += m_dT;
 
     return true;
 }
