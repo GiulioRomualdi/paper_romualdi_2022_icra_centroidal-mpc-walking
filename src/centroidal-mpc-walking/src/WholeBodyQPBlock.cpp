@@ -41,6 +41,24 @@ using namespace CentroidalMPCWalking;
 using namespace BipedalLocomotion::ParametersHandler;
 using namespace std::chrono_literals;
 
+double extactYawAngle(const Eigen::Ref<const Eigen::Matrix3d>& R)
+{
+    if (R(2, 0) < 1.0)
+    {
+        if (R(2, 0) > -1.0)
+        {
+            return atan2(R(1, 0), R(0, 0));
+        } else
+        {
+            // Not a unique solution
+            return -atan2(-R(1, 2), R(1, 1));
+        }
+    }
+
+    // Not a unique solution
+    return atan2(-R(1, 2), R(1, 1));
+}
+
 bool WholeBodyQPBlock::createKinDyn(const std::string& modelPath,
                                     const std::vector<std::string>& jointLists)
 {
@@ -1130,11 +1148,12 @@ bool WholeBodyQPBlock::advance()
         return false;
     }
 
-    // TODO (Giulio) This may not be the right solution. Probably using the average between left and
-    // right may help
+    // to better stabilize the robot we add a task on the chest only for the yaw
+    const double yaw = extactYawAngle(
+        iDynTree::toEigen(m_kinDynWithRegularization->getWorldTransform("chest").getRotation()));
     if (!m_IKandTasks.chestTask
-             ->setSetPoint(BipedalLocomotion::Conversions::toManifRot(
-                               m_kinDynWithRegularization->getWorldTransform("chest").getRotation()),
+             ->setSetPoint(manif::SO3d(
+                               Eigen::Quaterniond(Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()))),
                            manif::SO3d::Tangent::Zero()))
     {
         BipedalLocomotion::log()->error("{} Unable to set the set point for the chest task.",
@@ -1221,6 +1240,11 @@ bool WholeBodyQPBlock::advance()
     populateDataVector(measuredZMP, "zmp::measured");
     populateDataVector(m_output.totalExternalWrench, "external_wrench::filtered");
     populateDataVector(externalWrenchRaw, "external_wrench::raw");
+
+    populateDataVector(m_jointPosRegularize, "joints_state::positions::mann");
+    populateDataVector(m_desJointPos, "joints_state::positions::desired");
+    populateDataVector(m_input.angularMomentumMann, "angular_momentum::mann");
+    populateDataVector(m_output.angularMomentum, "angular_momentum::mpc");
 
     for (auto& [key, contact] : m_input.controllerOutput.contacts)
     {
