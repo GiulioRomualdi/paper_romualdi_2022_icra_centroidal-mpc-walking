@@ -25,8 +25,6 @@
 using namespace CentroidalMPCWalking;
 using namespace BipedalLocomotion::ParametersHandler;
 
-Eigen::Vector3d CoM0;
-
 BipedalLocomotion::Contacts::ContactPhaseList
 updateContactPhaseList(const std::chrono::nanoseconds& currentTime,
                        const BipedalLocomotion::Contacts::ContactPhaseList& mannPhaseList,
@@ -196,15 +194,13 @@ bool CentroidalMPCBlock::initialize(std::weak_ptr<const IParametersHandler> hand
     //     0.09999973925655095, -0.21065705479250768, 0.015695286263621544, -0.0647162232623409,
     //     0.10000197803987905, -0.21257567597757412, -0.003282499516478188;
 
-    jointPositions <<
-        -0.1083405028191962,
-        0.01464940967892403, 0.07062119719508, -0.10289331748217925, -0.1012132490914801,
-        -0.0173038389436336, -0.11275167823891682, 0.03667259663921431, 0.05493886524271771,
-        -0.09055099895926208, -0.09278315719945165, -0.03478220710451874, 0.15267533871086064,
-        0.003451022449904091, -0.017515644863920408, -0.0020115451190194367, 0.0014601683787918676,
-        0.011565481804382874, -0.04759409393252947, 0.10000590836596246, -0.19197253684934223,
-        0.05394598490420893, -0.04704542789138096, 0.09997832901610988, -0.20382346126939987,
-        -0.008043248437166084;
+    jointPositions << -0.1083405028191962, 0.01464940967892403, 0.07062119719508,
+        -0.10289331748217925, -0.1012132490914801, -0.0173038389436336, -0.11275167823891682,
+        0.03667259663921431, 0.05493886524271771, -0.09055099895926208, -0.09278315719945165,
+        -0.03478220710451874, 0.15267533871086064, 0.003451022449904091, -0.017515644863920408,
+        -0.0020115451190194367, 0.0014601683787918676, 0.011565481804382874, -0.04759409393252947,
+        0.10000590836596246, -0.19197253684934223, 0.05394598490420893, -0.04704542789138096,
+        0.09997832901610988, -0.20382346126939987, -0.008043248437166084;
 
     // jointPositions << -0.1046405016025761, 0.017001975000216298, 0.05860553979299023,
     //     -0.10861521376740862, -0.10469989126931348, -0.017162796031807485, -0.10555041888916736,
@@ -239,7 +235,7 @@ bool CentroidalMPCBlock::initialize(std::weak_ptr<const IParametersHandler> hand
     auto linkBaseIndex = kinDyn.model().getFrameLink(lSoleFrame);
     auto linkFrameName = kinDyn.model().getLinkName(linkBaseIndex);
 
-    auto l_foot_H_l_sole = kinDyn.getRelativeTransform(lSoleFrame, linkBaseIndex);
+    auto l_sole_H_l_foot = kinDyn.getRelativeTransform(lSoleFrame, linkBaseIndex);
 
     // set kindybase
     kinDyn.setFloatingBase(linkFrameName);
@@ -252,7 +248,7 @@ bool CentroidalMPCBlock::initialize(std::weak_ptr<const IParametersHandler> hand
 
     iDynTree::Vector3 dummyGravity;
     dummyGravity.zero();
-    kinDyn.setRobotState(l_foot_H_l_sole,
+    kinDyn.setRobotState(l_sole_H_l_foot,
                          jointPositionsiDyn,
                          iDynTree::Twist::Zero(),
                          dummyVel,
@@ -298,18 +294,34 @@ bool CentroidalMPCBlock::initialize(std::weak_ptr<const IParametersHandler> hand
     rightFoot.switchTime = 0s;
     rightFoot.pose = rightFootPose;
 
-    CoM0 = iDynTree::toEigen(kinDyn.getCenterOfMassPosition());
-    m_generator.setInitialState(jointPositions, leftFoot, rightFoot, basePose, 0s);
+    iDynTree::Transform leftFootTransformIdyn;
+    leftFootTransformIdyn.setPosition(iDynTree::Position(leftFoot.pose.translation()));
+    leftFootTransformIdyn.setRotation(iDynTree::Rotation(leftFoot.pose.rotation()));
+    kinDyn.setRobotState(leftFootTransformIdyn * l_sole_H_l_foot,
+                         jointPositionsiDyn,
+                         iDynTree::Twist::Zero(),
+                         dummyVel,
+                         dummyGravity);
+
+    m_generator.setInitialState(jointPositions,
+                                leftFoot,
+                                rightFoot,
+                                basePose,
+                                iDynTree::toEigen(kinDyn.getCenterOfMassPosition()),
+                                0s);
 
     m_joypadPort.open("/centroidal-mpc/joystick:i");
 
     m_directionalInput.motionDirection.setZero();
     m_directionalInput.facingDirection.setZero();
 
-    BipedalLocomotion::log()->info("{} Right foot pose {}.", logPrefix, rightFoot.pose.coeffs().transpose());
-    BipedalLocomotion::log()->info("{} Left foot pose {}.", logPrefix, leftFoot.pose.coeffs().transpose());
+    BipedalLocomotion::log()->info("{} Right foot pose {}.",
+                                   logPrefix,
+                                   rightFoot.pose.coeffs().transpose());
+    BipedalLocomotion::log()->info("{} Left foot pose {}.",
+                                   logPrefix,
+                                   leftFoot.pose.coeffs().transpose());
     BipedalLocomotion::log()->info("{} Initialization completed.", logPrefix);
-
 
     return true;
 }
@@ -328,14 +340,12 @@ bool CentroidalMPCBlock::setInput(const Input& input)
         return true;
     }
 
-    // the angular momentum needs to be scaled by the robot mass
-    Input scaledInput = input;
-    scaledInput.angularMomentum = input.angularMomentum;
-
-    return m_controller.setState(scaledInput.com,
-                                 scaledInput.dcom,
-                                 scaledInput.angularMomentum,
-                                 scaledInput.totalExternalWrench);
+    // Here we assume that the total external wrench and the angular momentum are scaled by the
+    // robot mass
+    return m_controller.setState(input.com,
+                                 input.dcom,
+                                 input.angularMomentum,
+                                 input.totalExternalWrench);
 }
 
 bool CentroidalMPCBlock::advance()

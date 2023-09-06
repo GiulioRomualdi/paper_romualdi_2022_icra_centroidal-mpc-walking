@@ -41,8 +41,6 @@ using namespace CentroidalMPCWalking;
 using namespace BipedalLocomotion::ParametersHandler;
 using namespace std::chrono_literals;
 
-bool firstbasestimation = true;
-
 bool WholeBodyQPBlock::createKinDyn(const std::string& modelPath,
                                     const std::vector<std::string>& jointLists)
 {
@@ -59,9 +57,11 @@ bool WholeBodyQPBlock::createKinDyn(const std::string& modelPath,
 
     m_kinDynWithDesired = std::make_shared<iDynTree::KinDynComputations>();
     m_kinDynWithMeasured = std::make_shared<iDynTree::KinDynComputations>();
+    m_kinDynWithRegularization = std::make_shared<iDynTree::KinDynComputations>();
 
     if (!m_kinDynWithDesired->loadRobotModel(ml.model())
-        || !m_kinDynWithMeasured->loadRobotModel(ml.model()))
+        || !m_kinDynWithMeasured->loadRobotModel(ml.model())
+        || !m_kinDynWithRegularization->loadRobotModel(ml.model()))
     {
         BipedalLocomotion::log()->error("{} Unable to load a KinDynComputation object",
                                         errorPrefix);
@@ -84,13 +84,6 @@ bool WholeBodyQPBlock::instantiateLeggedOdometry(std::shared_ptr<const IParamete
                                         logPrefix,
                                         modelPath);
         return false;
-    }
-
-    // print joint list
-    std::cout << "Joint list: " << std::endl;
-    for (const auto& joint : jointLists)
-    {
-        std::cout << joint << std::endl;
     }
 
     auto tmpKinDyn = std::make_shared<iDynTree::KinDynComputations>();
@@ -519,8 +512,15 @@ bool WholeBodyQPBlock::initialize(std::weak_ptr<const IParametersHandler> handle
         return false;
     }
 
-    m_kinDynWithDesired->setFloatingBase("root_link");
-    m_kinDynWithMeasured->setFloatingBase("root_link");
+    if (!m_kinDynWithDesired->setFloatingBase("root_link")
+        || !m_kinDynWithMeasured->setFloatingBase("root_link")
+        || !m_kinDynWithRegularization->setFloatingBase("root_link"))
+    {
+        BipedalLocomotion::log()->error("{} Unable to set the floating base in the "
+                                        "KinDynComputations objects.",
+                                        logPrefix);
+        return false;
+    }
 
     m_robotMass = m_kinDynWithMeasured->model().getTotalMass();
 
@@ -645,34 +645,6 @@ const WholeBodyQPBlock::Output& WholeBodyQPBlock::getOutput() const
 
 bool WholeBodyQPBlock::setInput(const Input& input)
 {
-    // print the contacts phases
-    for (const auto& [key, list] : input.contactPhaseList.lists())
-    {
-        for (const auto& contact : list)
-        {
-            BipedalLocomotion::log()->debug("[WholeBodyQPBlock::setInput] {} activation {} "
-                                            "deactivation {}.",
-                                            key,
-                                            std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                contact.activationTime),
-                                            std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                contact.deactivationTime));
-        }
-    }
-
-    /*     using namespace std::chrono_literals;
-        if (m_absoluteTime == 0ns)
-        {
-            m_absoluteTime = input.currentTime;
-            m_leftFootPlanner.setTime(m_absoluteTime);
-            m_rightFootPlanner.setTime(m_absoluteTime);
-        }
-
-        if (input.currentTime > m_absoluteTime)
-        {
-            return true;
-        }
-     */
     m_input = input;
     return true;
 }
@@ -750,9 +722,7 @@ bool WholeBodyQPBlock::computeDesiredZMP(
     Eigen::Ref<Eigen::Vector2d> zmp)
 {
     double totalZ = 0;
-    Eigen::Vector3d localZMP;
-    localZMP.setZero();
-
+    zmp.setZero();
     if (contacts.size() == 0)
     {
         BipedalLocomotion::log()->error("[WholeBodyQPBlock::computeDesiredZMP] No contact is "
@@ -762,11 +732,15 @@ bool WholeBodyQPBlock::computeDesiredZMP(
 
     for (const auto& [key, contact] : contacts)
     {
+        Eigen::Vector3d localZMP;
+        localZMP.setZero();
+
         BipedalLocomotion::Math::Wrenchd totalWrench = BipedalLocomotion::Math::Wrenchd::Zero();
         for (const auto& corner : contact.corners)
         {
             totalWrench.force() = corner.force;
-            totalWrench.torque() += corner.position.cross(contact.pose.asSO3().act(corner.force));
+            totalWrench.torque()
+                += corner.position.cross(contact.pose.asSO3().inverse().act(corner.force));
         }
         if (totalWrench.force()(2) > 0.001)
         {
@@ -774,6 +748,9 @@ bool WholeBodyQPBlock::computeDesiredZMP(
             localZMP(0) = -totalWrench.torque()(1) / totalWrench.force()(2);
             localZMP(1) = totalWrench.torque()(0) / totalWrench.force()(2);
             localZMP(2) = 0.0;
+
+            localZMP(0) = std::min(0.08, std::max(-0.08, localZMP(0)));
+            localZMP(1) = std::min(0.03, std::max(-0.03, localZMP(1)));
 
             // the wrench is already expressed in mixed we have just to translate it
             // if left
@@ -907,6 +884,25 @@ bool WholeBodyQPBlock::advance()
         return false;
     }
 
+    // we get the upper part of the robot
+    if (m_firstIteration)
+    {
+        m_jointPosRegularize = m_currentJointPos;
+    }
+    m_jointPosRegularize.tail<14>() = m_input.regularizedJoints.tail<14>();
+
+    if (!m_kinDynWithRegularization->setRobotState(m_baseTransform.transform(),
+                                                   m_jointPosRegularize,
+                                                   iDynTree::make_span(m_baseVelocity.data(),
+                                                                       manif::SE3d::Tangent::DoF),
+                                                   m_desJointVel,
+                                                   gravity))
+    {
+        BipedalLocomotion::log()->error("{} Unable to set the robot state in the kinDyn object.",
+                                        errorPrefix);
+        return false;
+    }
+
     m_output.totalExternalWrench.setZero();
 
     // prepare the output for the MPC
@@ -928,15 +924,16 @@ bool WholeBodyQPBlock::advance()
     m_output.totalExternalWrench.force() /= m_robotMass;
     m_output.totalExternalWrench.torque() /= m_robotMass;
 
+    BipedalLocomotion::Math::Wrenchd externalWrenchRaw = m_output.totalExternalWrench;
+
     // TODO (Giulio): here we added a threshold probably it should be removed or better set as a
     // configuration parameter
-    // if (m_output.totalExternalWrench.force().norm() < 1.5)
-    // {
+    if (m_output.totalExternalWrench.force().norm() < 0.7)
+    {
         m_output.totalExternalWrench.setZero();
-    // 
+    }
 
     // update the kinematics
-
     m_output.com = iDynTree::toEigen(m_kinDynWithDesired->getCenterOfMassPosition());
     m_output.dcom.setZero();
     m_output.angularMomentum.setZero();
@@ -952,7 +949,6 @@ bool WholeBodyQPBlock::advance()
     // if this is the first iteration we need to initialize some quantities
     if (m_firstIteration)
     {
-
         // the mass is assumed to be 1
         if (!m_centroidalSystem.dynamics->setState(
                 {m_output.com, m_output.dcom, m_output.angularMomentum / m_robotMass}))
@@ -1003,20 +999,9 @@ bool WholeBodyQPBlock::advance()
         BipedalLocomotion::log()->error("{} Unable to set the control input for the centroidal "
                                         "dynamics.",
                                         errorPrefix);
+        return false;
     }
 
-    // we need also to update the swing feet planners
-
-    // print the contact lists stored in the contact phase list
-    /*     for (const auto& [key, list] : m_input.contactPhaseList.lists())
-        {
-            for (const auto& contact : list)
-            {
-                BipedalLocomotion::log()->info("{} Contact list {}, activation time {}, deactivation
-       " "time {}", errorPrefix, key, contact.activationTime, contact.deactivationTime);
-            }
-        }
-     */
     if (!m_leftFootPlanner.setContactList(m_input.contactPhaseList.lists().at("left_foot")))
     {
         BipedalLocomotion::log()->error("{} Unable to set the contact list for the left foot "
@@ -1101,8 +1086,7 @@ bool WholeBodyQPBlock::advance()
         return false;
     }
 
-     // TODO this can be provided by MANN
-    if (!m_IKandTasks.regularizationTask->setSetPoint(m_input.regularizedJoints))
+    if (!m_IKandTasks.regularizationTask->setSetPoint(m_jointPosRegularize))
     {
         BipedalLocomotion::log()->error("{} Unable to set the set point for the "
                                         "regularization task.",
@@ -1146,7 +1130,12 @@ bool WholeBodyQPBlock::advance()
         return false;
     }
 
-    if (!m_IKandTasks.chestTask->setSetPoint(manif::SO3d::Identity(), manif::SO3d::Tangent::Zero()))
+    // TODO (Giulio) This may not be the right solution. Probably using the average between left and
+    // right may help
+    if (!m_IKandTasks.chestTask
+             ->setSetPoint(BipedalLocomotion::Conversions::toManifRot(
+                               m_kinDynWithRegularization->getWorldTransform("chest").getRotation()),
+                           manif::SO3d::Tangent::Zero()))
     {
         BipedalLocomotion::log()->error("{} Unable to set the set point for the chest task.",
                                         errorPrefix);
@@ -1226,6 +1215,12 @@ bool WholeBodyQPBlock::advance()
                                                  m_input.adherentComputationTime)
                                                  .count()},
                        "computation_time::AdherentMPC");
+
+    // save desired zmp
+    populateDataVector(desiredZMP, "zmp::desired");
+    populateDataVector(measuredZMP, "zmp::measured");
+    populateDataVector(m_output.totalExternalWrench, "external_wrench::filtered");
+    populateDataVector(externalWrenchRaw, "external_wrench::raw");
 
     for (auto& [key, contact] : m_input.controllerOutput.contacts)
     {

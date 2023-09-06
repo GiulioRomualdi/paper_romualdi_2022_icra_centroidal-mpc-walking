@@ -106,6 +106,7 @@ class WholeBodyQPBlock
     };
     IKProblemAndTask m_IKandTasks;
     Eigen::Vector3d m_rootLinkOffset;
+    Eigen::VectorXd m_jointPosRegularize;
 
     template <typename _Dynamics, typename _Integrator> struct DynamicsAndIntegrator
     {
@@ -132,6 +133,7 @@ class WholeBodyQPBlock
 
     std::shared_ptr<iDynTree::KinDynComputations> m_kinDynWithDesired;
     std::shared_ptr<iDynTree::KinDynComputations> m_kinDynWithMeasured;
+    std::shared_ptr<iDynTree::KinDynComputations> m_kinDynWithRegularization;
 
     std::chrono::nanoseconds m_dT;
     std::chrono::nanoseconds m_absoluteTime{std::chrono::nanoseconds::zero()};

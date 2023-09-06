@@ -111,7 +111,7 @@ int main(int argc, char* argv[])
 
     BipedalLocomotion::System::handleQuitSignals([&]() {
         centroidalMPCRunner.stop();
-        /*         wholeBodyRunner.stop(); */
+        wholeBodyRunner.stop();
     });
 
     // Run the threads
