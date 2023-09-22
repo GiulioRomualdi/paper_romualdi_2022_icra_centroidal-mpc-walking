@@ -43,6 +43,11 @@
         <yarpPluginConfigurationOverride plugin_name='controlboard_right_leg'> </yarpPluginConfigurationOverride>
         <initialConfiguration>0.0937711    0.0522505   -0.0126968    -0.607125    -0.369637    -0.053326</initialConfiguration>
       </plugin>
+
+      <plugin name='externalwrench' filename='libgazebo_yarp_externalwrench.so'>
+        <yarpConfigurationFile>model://ergoCub/conf/gazebo_ergocub_robotname.ini</yarpConfigurationFile>
+      </plugin>
+
       <include>
         <uri>model://ergoCubGazeboV1</uri>
         <pose>0.0 0.0 0.8 0.0 -0.1 0.0</pose>
