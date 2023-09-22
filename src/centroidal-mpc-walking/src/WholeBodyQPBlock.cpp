@@ -34,6 +34,7 @@
 #include <BipedalLocomotion/System/Clock.h>
 #include <BipedalLocomotion/System/VariablesHandler.h>
 #include <BipedalLocomotion/TextLogging/Logger.h>
+#include <BipedalLocomotion/System/Clock.h>
 
 #include <CentroidalMPCWalking/WholeBodyQPBlock.h>
 
@@ -756,7 +757,7 @@ bool WholeBodyQPBlock::computeDesiredZMP(
         BipedalLocomotion::Math::Wrenchd totalWrench = BipedalLocomotion::Math::Wrenchd::Zero();
         for (const auto& corner : contact.corners)
         {
-            totalWrench.force() = corner.force;
+            totalWrench.force() += corner.force;
             totalWrench.torque()
                 += corner.position.cross(contact.pose.asSO3().inverse().act(corner.force));
         }
@@ -808,6 +809,8 @@ bool WholeBodyQPBlock::computeDesiredZMP(
 bool WholeBodyQPBlock::advance()
 {
     constexpr auto errorPrefix = "[WholeBodyQPBlock::advance]";
+
+    auto tic = BipedalLocomotion::clock().now();
 
     bool shouldAdvance = false;
     m_output.isValid = false;
@@ -1193,6 +1196,9 @@ bool WholeBodyQPBlock::advance()
     m_output.angularMomentum
         = m_centroidalSystem.dynamics->getState().get_from_hash<"angular_momentum"_h>();
 
+    auto toc = BipedalLocomotion::clock().now();
+    Eigen::Matrix<double, 1, 1> computationTime{std::chrono::duration<double>(toc - tic).count()};
+
     BipedalLocomotion::YarpUtilities::VectorsCollection& data = m_logDataPort.prepare();
     data.vectors.clear();
     auto populateDataVector = [&](const auto& vector, const std::string& name) {
@@ -1234,6 +1240,7 @@ bool WholeBodyQPBlock::advance()
                                                  m_input.adherentComputationTime)
                                                  .count()},
                        "computation_time::AdherentMPC");
+    populateDataVector(computationTime, "computation_time::WholeBodyQP");
 
     // save desired zmp
     populateDataVector(desiredZMP, "zmp::desired");
@@ -1245,6 +1252,8 @@ bool WholeBodyQPBlock::advance()
     populateDataVector(m_desJointPos, "joints_state::positions::desired");
     populateDataVector(m_input.angularMomentumMann, "angular_momentum::mann");
     populateDataVector(m_output.angularMomentum, "angular_momentum::mpc");
+    populateDataVector(m_input.motionDirection, "joypad::motion_direction");
+    populateDataVector(m_input.facingDirection, "joypad::facing_direction");
 
     for (auto& [key, contact] : m_input.controllerOutput.contacts)
     {

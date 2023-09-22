@@ -50,6 +50,8 @@ struct CentroidalMPCOutput
     Eigen::Vector3d comMANN;
     Eigen::Vector3d angularMomentumMann;
     Eigen::VectorXd regularizedJoints;
+    Eigen::Vector2d facingDirection;
+    Eigen::Vector2d motionDirection;
 
     bool isValid{false};
 };

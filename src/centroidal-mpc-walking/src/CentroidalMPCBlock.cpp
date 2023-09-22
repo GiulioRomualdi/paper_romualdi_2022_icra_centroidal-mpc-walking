@@ -200,9 +200,9 @@ bool CentroidalMPCBlock::initialize(std::weak_ptr<const IParametersHandler> hand
     //     -0.10289331748217925, -0.1012132490914801, -0.0173038389436336, -0.11275167823891682,
     //     0.03667259663921431, 0.05493886524271771, -0.09055099895926208, -0.09278315719945165,
     //     -0.03478220710451874, 0.15267533871086064, 0.003451022449904091, -0.017515644863920408,
-    //     -0.0020115451190194367, 0.0014601683787918676, 0.011565481804382874, -0.04759409393252947,
-    //     0.10000590836596246, -0.19197253684934223, 0.05394598490420893, -0.04704542789138096,
-    //     0.09997832901610988, -0.20382346126939987, -0.008043248437166084;
+    //     -0.0020115451190194367, 0.0014601683787918676, 0.011565481804382874,
+    //     -0.04759409393252947, 0.10000590836596246, -0.19197253684934223, 0.05394598490420893,
+    //     -0.04704542789138096, 0.09997832901610988, -0.20382346126939987, -0.008043248437166084;
 
     // jointPositions << -0.1046405016025761, 0.017001975000216298, 0.05860553979299023,
     //     -0.10861521376740862, -0.10469989126931348, -0.017162796031807485, -0.10555041888916736,
@@ -224,15 +224,21 @@ bool CentroidalMPCBlock::initialize(std::weak_ptr<const IParametersHandler> hand
     //     0.0419854257806720; // right
     //                         // arm
 
-    jointPositions <<
-        -0.10704676769729708,
-        0.012925973405522994, 0.071895284039525, -0.0996134196581665, -0.09861216989767335,
-        -0.014251179274100766, -0.11118618014578055, 0.035651653099700815, 0.057847116296006404,
-        -0.09680096080425257, -0.0990365301429598, -0.033878120609673684, 0.15568026047513014,
-        0.004317234521230275, -0.02030554515076784, -0.0021306312005093236, 0.0029481809738139265,
-        0.009979402224284993, -0.05175542996772139, 0.10000318973045413, -0.19553431552870545,
-        0.04983171308345671, -0.053410414924022265, 0.09998072151822349, -0.20769041030905094,
-        -0.006947678797282503;
+    // jointPositions << -0.10704676769729708, 0.012925973405522994, 0.071895284039525,
+    //     -0.0996134196581665, -0.09861216989767335, -0.014251179274100766, -0.11118618014578055,
+    //     0.035651653099700815, 0.057847116296006404, -0.09680096080425257, -0.0990365301429598,
+    //     -0.033878120609673684, 0.15568026047513014, 0.004317234521230275, -0.02030554515076784,
+    //     -0.0021306312005093236, 0.0029481809738139265, 0.009979402224284993,
+    //     -0.05175542996772139, 0.10000318973045413, -0.19553431552870545, 0.04983171308345671,
+    //     -0.053410414924022265, 0.09998072151822349, -0.20769041030905094, -0.006947678797282503;
+
+    jointPositions << -0.10914914922234864, 0.013321900684695305, 0.0641749643461214,
+        -0.10257791368141178, -0.10022507712940709, -0.008216588774319855, -0.12268291054316265,
+        0.030634497603792124, 0.07615972729195111, -0.08458915163006389, -0.09374216923819316,
+        -0.03547153929302758, 0.15820784458809578, 0.0027573447757581046, -0.00487324344589554,
+        -0.00020607396841307649, -0.0024925787007575857, 0.044068009171592995,
+        -0.027139990021827265, 0.10001107590632177, -0.20205046715326178, 0.03895909848833218,
+        -0.03078463156388759, 0.09999763869735125, -0.20637555723866208, -0.003024742916772738;
 
     iDynTree::KinDynComputations kinDyn;
     kinDyn.loadRobotModel(ml.model());
@@ -284,7 +290,13 @@ bool CentroidalMPCBlock::initialize(std::weak_ptr<const IParametersHandler> hand
     rightFootPoseNewPosition[0] = -basePose.translation()[0] + rightFootPose.translation()[0];
     rightFootPoseNewPosition[1] = -basePose.translation()[1] + rightFootPose.translation()[1];
     rightFootPoseNewPosition[2] = 0;
-    rightFootPose = manif::SE3d(rightFootPoseNewPosition, manif::SO3d::Identity());
+
+    iDynTree::Rotation R;
+    auto rpyTMP = kinDyn.getWorldTransform("r_sole").getRotation().asRPY();
+
+    rightFootPose = manif::SE3d(rightFootPoseNewPosition,
+                                BipedalLocomotion::Conversions::toManifRot(
+                                    iDynTree::Rotation::RPY(0, 0, rpyTMP(2))));
 
     auto newBasePosition = basePose.translation();
     newBasePosition[0] = 0;
@@ -326,6 +338,9 @@ bool CentroidalMPCBlock::initialize(std::weak_ptr<const IParametersHandler> hand
 
     m_directionalInput.motionDirection.setZero();
     m_directionalInput.facingDirection.setZero();
+
+    m_directionalInput.facingDirection << 0, 0;
+    m_directionalInput.motionDirection << 0, 0;
 
     BipedalLocomotion::log()->info("{} Right foot pose {}.",
                                    logPrefix,
@@ -384,6 +399,9 @@ bool CentroidalMPCBlock::advance()
         m_directionalInput.motionDirection << tmp->operator()(0), tmp->operator()(1);
         m_directionalInput.facingDirection << tmp->operator()(2), tmp->operator()(3);
     }
+
+    m_output.facingDirection = m_directionalInput.facingDirection;
+    m_output.motionDirection = m_directionalInput.motionDirection;
 
     if (!m_generatorInputBuilder.setInput(m_directionalInput))
     {
@@ -446,7 +464,7 @@ bool CentroidalMPCBlock::advance()
     auto reducedHeightCoM = MANNGeneratorOutput.comTrajectory;
     for (auto& t : reducedHeightCoM)
     {
-        t[2] = 0.7 + t[2] - comz0mann;
+        t[2] = 0.7; //+ (t[2] - comz0mann) / 2;
     }
 
     m_output.comMANN = reducedHeightCoM.front();
