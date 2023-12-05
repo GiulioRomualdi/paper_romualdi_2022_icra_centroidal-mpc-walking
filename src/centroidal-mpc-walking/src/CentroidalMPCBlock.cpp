@@ -328,11 +328,7 @@ bool CentroidalMPCBlock::initialize(std::weak_ptr<const IParametersHandler> hand
                          dummyGravity);
 
     m_generator.setInitialState(jointPositions,
-                                leftFoot,
-                                rightFoot,
-                                basePose,
-                                iDynTree::toEigen(kinDyn.getCenterOfMassPosition()),
-                                0s);
+                                basePose);
 
     m_joypadPort.open("/centroidal-mpc/joystick:i");
 
