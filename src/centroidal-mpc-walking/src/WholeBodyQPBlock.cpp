@@ -34,7 +34,6 @@
 #include <BipedalLocomotion/System/Clock.h>
 #include <BipedalLocomotion/System/VariablesHandler.h>
 #include <BipedalLocomotion/TextLogging/Logger.h>
-#include <BipedalLocomotion/System/Clock.h>
 
 #include <CentroidalMPCWalking/WholeBodyQPBlock.h>
 
@@ -664,7 +663,17 @@ const WholeBodyQPBlock::Output& WholeBodyQPBlock::getOutput() const
 
 bool WholeBodyQPBlock::setInput(const Input& input)
 {
+    if (m_absoluteTime < input.currentTime)
+    {
+        return true;
+    }
     m_input = input;
+
+    BipedalLocomotion::log()
+        ->info("input time {} at time {}",
+               std::chrono::duration_cast<std::chrono::milliseconds>(m_input.currentTime),
+               std::chrono::duration_cast<std::chrono::milliseconds>(m_absoluteTime));
+
     return true;
 }
 
@@ -1154,10 +1163,9 @@ bool WholeBodyQPBlock::advance()
     // to better stabilize the robot we add a task on the chest only for the yaw
     const double yaw = extactYawAngle(
         iDynTree::toEigen(m_kinDynWithRegularization->getWorldTransform("chest").getRotation()));
-    if (!m_IKandTasks.chestTask
-             ->setSetPoint(manif::SO3d(
-                               Eigen::Quaterniond(Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()))),
-                           manif::SO3d::Tangent::Zero()))
+    if (!m_IKandTasks.chestTask->setSetPoint(manif::SO3d(Eigen::Quaterniond(
+                                                 Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()))),
+                                             manif::SO3d::Tangent::Zero()))
     {
         BipedalLocomotion::log()->error("{} Unable to set the set point for the chest task.",
                                         errorPrefix);

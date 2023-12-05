@@ -27,13 +27,14 @@ using namespace BipedalLocomotion::ParametersHandler;
 
 double comz0mann = 0;
 
-BipedalLocomotion::Contacts::ContactPhaseList
-updateContactPhaseList(const std::chrono::nanoseconds& currentTime,
-                       const BipedalLocomotion::Contacts::ContactPhaseList& mannPhaseList,
-                       const BipedalLocomotion::Contacts::ContactPhaseList& mpcPhaseList)
+bool updateContactPhaseList(const std::chrono::nanoseconds& currentTime,
+                            const BipedalLocomotion::Contacts::ContactPhaseList& mannPhaseList,
+                            const BipedalLocomotion::Contacts::ContactPhaseList& mpcPhaseList,
+                            BipedalLocomotion::Contacts::ContactPhaseList& contactPhaseList)
 {
-    BipedalLocomotion::Contacts::ContactPhaseList contactPhaseList;
     BipedalLocomotion::Contacts::ContactListMap contactListMap;
+    using BipedalLocomotion::log;
+    constexpr auto logPrefix = "[updateContactPhaseList]";
 
     // auto printContactList = [](const BipedalLocomotion::Contacts::ContactList& contactList) {
     //     for (const auto& contact : contactList)
@@ -68,30 +69,67 @@ updateContactPhaseList(const std::chrono::nanoseconds& currentTime,
 
     for (const auto& [name, contactList] : mannPhaseList.lists())
     {
-        // get the index of the current contact in the mann phase list
-        auto mannPresentContact = contactList.getPresentContact(currentTime);
-        for (auto it = std::next(mannPresentContact); it != contactList.cend(); ++it)
+        // get the index of the next contact in the mann phase list
+        for (auto mannIt = contactList.getNextContact(currentTime); //
+             mannIt != contactList.cend();
+             ++mannIt)
         {
-            contactListMap[name].addContact(*it);
+            if (!contactListMap[name].addContact(*mannIt))
+            {
+                log()->error("{} Unable to add the contact to the contact list of the {} foot.",
+                             logPrefix,
+                             name);
+                log()->error("This should never happen since the contact list of mann cannot be "
+                             "inconsistent.");
+                return false;
+            }
         }
 
         // get the index of the current contact in the mpc phase list
         const auto& mpcList = mpcPhaseList.lists().at(name);
-        auto mpcPresentContact = mpcList.getPresentContact(currentTime);
+        auto mpcPresentContact = mpcList.getActiveContact(currentTime);
 
-        for (auto it = mpcList.begin(); it != mpcPresentContact; ++it)
+        if (mpcPresentContact == mpcList.cend())
         {
-            contactListMap[name].addContact(*it);
+            // nothing to do
+            continue;
         }
 
-        // for the current we take the time of mann and the pose of the MPC
-        // this is required since the deactivation time may changed
-        if (mpcPresentContact != mpcList.cend())
+        auto mannPresentContact = contactList.getActiveContact(currentTime);
+        if (mannPresentContact == contactList.cend())
         {
-            auto contact = *mpcPresentContact;
-            contact.activationTime = (*mannPresentContact).activationTime;
-            contact.deactivationTime = (*mannPresentContact).deactivationTime;
-            contactListMap[name].addContact(contact);
+            log()->error("{} Unable to find the current contact of the {} foot at time {}.",
+                         logPrefix,
+                         name,
+                         std::chrono::duration_cast<std::chrono::milliseconds>(currentTime));
+            return false;
+        }
+
+        auto contact = *mpcPresentContact;
+        contact.activationTime = (*mannPresentContact).activationTime;
+        contact.deactivationTime = (*mannPresentContact).deactivationTime;
+        if (!contactListMap[name].addContact(contact))
+        {
+            log()->error("{} Unable to add the contact to the contact list of the {} foot. For "
+                         "the current contact.",
+                         logPrefix,
+                         name);
+
+            log()->error("mpc contact activation time {}, deactivation time {}",
+                         std::chrono::duration_cast<std::chrono::milliseconds>(
+                             mpcPresentContact->activationTime),
+                         std::chrono::duration_cast<std::chrono::milliseconds>(
+                             mpcPresentContact->deactivationTime));
+
+            log()->error("mann contact activation time {}, deactivation time {}",
+                         std::chrono::duration_cast<std::chrono::milliseconds>(
+                             (*mannPresentContact).activationTime),
+                         std::chrono::duration_cast<std::chrono::milliseconds>(
+                             (*mannPresentContact).deactivationTime));
+
+            log()->error("current time {}",
+                         std::chrono::duration_cast<std::chrono::milliseconds>(currentTime));
+            return false;
         }
     }
 
@@ -105,7 +143,7 @@ updateContactPhaseList(const std::chrono::nanoseconds& currentTime,
     //     printContactList(contactList);
     // }
 
-    return contactPhaseList;
+    return true;
 }
 
 bool CentroidalMPCBlock::initialize(std::weak_ptr<const IParametersHandler> handler)
@@ -327,16 +365,15 @@ bool CentroidalMPCBlock::initialize(std::weak_ptr<const IParametersHandler> hand
                          dummyVel,
                          dummyGravity);
 
-    m_generator.setInitialState(jointPositions,
-                                basePose);
+    m_generator.setInitialState(jointPositions, basePose);
 
     m_joypadPort.open("/centroidal-mpc/joystick:i");
 
     m_directionalInput.motionDirection.setZero();
     m_directionalInput.facingDirection.setZero();
 
-    m_directionalInput.facingDirection << 0, 0;
-    m_directionalInput.motionDirection << 0, 0;
+    m_directionalInput.facingDirection << 1, 0;
+    m_directionalInput.motionDirection << 1, 0;
 
     BipedalLocomotion::log()->info("{} Right foot pose {}.",
                                    logPrefix,
@@ -454,7 +491,7 @@ bool CentroidalMPCBlock::advance()
     auto scaledAngularMomentum = MANNGeneratorOutput.angularMomentumTrajectory;
     for (auto& t : scaledAngularMomentum)
     {
-        t = t / m_robotMass / 5;
+        t = t / m_robotMass;
     }
 
     auto reducedHeightCoM = MANNGeneratorOutput.comTrajectory;
@@ -476,12 +513,47 @@ bool CentroidalMPCBlock::advance()
         return false;
     }
 
+    log()->info("print contact mann");
+    for (const auto& [key, list] : MANNGeneratorOutput.phaseList.lists())
+    {
+        for (const auto& contact : list)
+        {
+            log()->info("name: {}, activation time: {}, deactivation time: {}, pose {}",
+                        contact.name,
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            contact.activationTime),
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            contact.deactivationTime),
+                        contact.pose.coeffs().transpose());
+        }
+    }
+
+    log()->info("print contact mpc");
+    for (const auto& [key, list] : m_controller.getOutput().contactPhaseList.lists())
+    {
+        for (const auto& contact : list)
+        {
+            log()->info("name: {}, activation time: {}, deactivation time: {}, pose {}",
+                        contact.name,
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            contact.activationTime),
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            contact.deactivationTime),
+                        contact.pose.coeffs().transpose());
+        }
+    }
+
     BipedalLocomotion::Contacts::ContactPhaseList contactPhaseList;
     if (!m_isFirstRun)
     {
-        contactPhaseList = updateContactPhaseList(m_absoluteTime,
-                                                  MANNGeneratorOutput.phaseList,
-                                                  m_controller.getOutput().contactPhaseList);
+        if (!updateContactPhaseList(m_absoluteTime,
+                                    MANNGeneratorOutput.phaseList,
+                                    m_controller.getOutput().contactPhaseList,
+                                    contactPhaseList))
+        {
+            log()->error("{} Unable to update the contact phase list.", logPrefix);
+            return false;
+        }
     } else
     {
         contactPhaseList = MANNGeneratorOutput.phaseList;
