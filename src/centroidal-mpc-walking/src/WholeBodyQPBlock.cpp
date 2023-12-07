@@ -668,12 +668,6 @@ bool WholeBodyQPBlock::setInput(const Input& input)
         return true;
     }
     m_input = input;
-
-    BipedalLocomotion::log()
-        ->info("input time {} at time {}",
-               std::chrono::duration_cast<std::chrono::milliseconds>(m_input.currentTime),
-               std::chrono::duration_cast<std::chrono::milliseconds>(m_absoluteTime));
-
     return true;
 }
 
@@ -1284,7 +1278,6 @@ bool WholeBodyQPBlock::advance()
         auto contact = contactList.getPresentContact(m_absoluteTime);
         if (contact == contactList.cend())
         {
-            BipedalLocomotion::log()->info("{} Contact {} is not active.", errorPrefix, key);
             continue;
         }
 

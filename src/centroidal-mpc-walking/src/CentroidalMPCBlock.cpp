@@ -144,6 +144,7 @@ bool updateContactPhaseList(const std::chrono::nanoseconds& currentTime,
     // }
 
     return true;
+    return true;
 }
 
 bool CentroidalMPCBlock::initialize(std::weak_ptr<const IParametersHandler> handler)
@@ -224,52 +225,76 @@ bool CentroidalMPCBlock::initialize(std::weak_ptr<const IParametersHandler> hand
         return false;
     }
 
+    // if the previous went fine then the handler is not expired
+    auto ptrMann = ptr->getGroup("MANN").lock();
+    std::chrono::nanoseconds mannHorizon, mannSamplingTime;
+    double slowDownFactor;
+    if (!ptrMann->getParameter("time_horizon", mannHorizon)
+        || !ptrMann->getParameter("sampling_time", mannSamplingTime)
+        || !ptrMann->getParameter("slow_down_factor", slowDownFactor))
+    {
+        log()->error("{} Unable to get the time horizon or the sampling time.", logPrefix);
+        return false;
+    }
+    std::size_t numberOfMannKnots = mannHorizon / mannSamplingTime;
+    m_comFrequencyAdapter.inputTimeKnots.resize(numberOfMannKnots);
+    m_angularMomentumFrequencyAdapter.inputTimeKnots.resize(numberOfMannKnots);
+    for (std::size_t i = 0; i < numberOfMannKnots; i++)
+    {
+        m_comFrequencyAdapter.inputTimeKnots[i] = i * mannSamplingTime;
+        m_comFrequencyAdapter.inputTimeKnots[i] *= slowDownFactor;
+        m_angularMomentumFrequencyAdapter.inputTimeKnots[i] = i * mannSamplingTime;
+        m_angularMomentumFrequencyAdapter.inputTimeKnots[i] *= slowDownFactor;
+    }
+
+    // if the previous went fine then the handler is not expired
+    for (const auto& t : m_comFrequencyAdapter.inputTimeKnots)
+    {
+        BipedalLocomotion::log()->info("{} com knots input {}",
+                                       logPrefix,
+                                       std::chrono::duration_cast<std::chrono::milliseconds>(t));
+    }
+
+    auto ptrMPC = ptr->getGroup("CENTROIDAL_MPC").lock();
+    std::chrono::nanoseconds mpcHorizon, mpcSamplingTime;
+    if (!ptrMPC->getParameter("time_horizon", mpcHorizon)
+        || !ptrMPC->getParameter("sampling_time", mpcSamplingTime))
+    {
+        log()->error("{} Unable to get the time horizon or the sampling time.", logPrefix);
+        return false;
+    }
+    std::size_t numberOfMpcKnots = mpcHorizon / mpcSamplingTime + 1;
+    m_comFrequencyAdapter.outputTimeKnots.resize(numberOfMpcKnots);
+    m_angularMomentumFrequencyAdapter.outputTimeKnots.resize(numberOfMpcKnots);
+    m_comFrequencyAdapter.outputPoints.resize(numberOfMpcKnots);
+    m_angularMomentumFrequencyAdapter.outputPoints.resize(numberOfMpcKnots);
+    m_comFrequencyAdapter.dummy.resize(numberOfMpcKnots);
+    m_angularMomentumFrequencyAdapter.dummy.resize(numberOfMpcKnots);
+
+    for (std::size_t i = 0; i < numberOfMpcKnots; i++)
+    {
+        m_comFrequencyAdapter.outputTimeKnots[i] = i * mpcSamplingTime;
+        m_angularMomentumFrequencyAdapter.outputTimeKnots[i] = i * mpcSamplingTime;
+    }
+
+    for (const auto& t : m_comFrequencyAdapter.outputTimeKnots)
+    {
+        BipedalLocomotion::log()->info("{} com knots output {}",
+                                       logPrefix,
+                                       std::chrono::duration_cast<std::chrono::milliseconds>(t));
+    }
+
+    m_comFrequencyAdapter.spline.setInitialConditions(Eigen::Vector3d::Zero(),
+                                                      Eigen::Vector3d::Zero());
+    m_angularMomentumFrequencyAdapter.spline.setInitialConditions(Eigen::Vector3d::Zero(),
+                                                                  Eigen::Vector3d::Zero());
+    m_comFrequencyAdapter.spline.setFinalConditions(Eigen::Vector3d::Zero(),
+                                                    Eigen::Vector3d::Zero());
+    m_angularMomentumFrequencyAdapter.spline.setFinalConditions(Eigen::Vector3d::Zero(),
+                                                                Eigen::Vector3d::Zero());
+
     // set the initial state of mann trajectory generator
     Eigen::VectorXd jointPositions(26);
-    // jointPositions << -0.09935663695085467, 0.025701155059457442, 0.06534184984184833,
-    //     -0.08227673039926048, -0.07768761174843312, -0.024315843233342373, -0.11525704616838933,
-    //     0.02478877256772321, 0.05046307803997472, -0.08762109045807909, -0.10031852516392248,
-    //     -0.025565627238000203, 0.16487824979762272, 0.0030093422556509227, -0.010453910438339882,
-    //     -0.003975671198541142, -0.004306264052024712, 0.02768477434088547, -0.05625823587699814,
-    //     0.09999973925655095, -0.21065705479250768, 0.015695286263621544, -0.0647162232623409,
-    //     0.10000197803987905, -0.21257567597757412, -0.003282499516478188;
-
-    // jointPositions << -0.1083405028191962, 0.01464940967892403, 0.07062119719508,
-    //     -0.10289331748217925, -0.1012132490914801, -0.0173038389436336, -0.11275167823891682,
-    //     0.03667259663921431, 0.05493886524271771, -0.09055099895926208, -0.09278315719945165,
-    //     -0.03478220710451874, 0.15267533871086064, 0.003451022449904091, -0.017515644863920408,
-    //     -0.0020115451190194367, 0.0014601683787918676, 0.011565481804382874,
-    //     -0.04759409393252947, 0.10000590836596246, -0.19197253684934223, 0.05394598490420893,
-    //     -0.04704542789138096, 0.09997832901610988, -0.20382346126939987, -0.008043248437166084;
-
-    // jointPositions << -0.1046405016025761, 0.017001975000216298, 0.05860553979299023,
-    //     -0.10861521376740862, -0.10469989126931348, -0.017162796031807485, -0.10555041888916736,
-    //     0.027253879470372736, 0.05886380122392785, -0.09220682518818205, -0.08923763315828329,
-    //     -0.026626646132658194, 0.16448252889206036, 0.0008976397176696274, -0.004168695848377414,
-    //     -0.003024068405504912, -0.003051667477044264, 0.02620836750592551, -0.05091593006812735,
-    //     0.09999862602765555, -0.20693304218868638, 0.0284961484128734, -0.0524330311572014,
-    //     0.09999598464167686, -0.2124976706557769, 0.00869636757561082;
-
-    // jointPositions << -0.10922017141063572, 0.05081325960010118, 0.06581966291990003,
-    //     -0.0898053099824925, -0.09324922528169599, -0.05110058859172172, // left leg
-    //     -0.11021232812838086, 0.054291515925228385, 0.0735575862560208, -0.09509332143185895,
-    //     -0.09833823347493076, -0.05367281245082792, // right leg
-    //     0.1531558711397399, -0.001030634273454133, 0.0006584764419034815, // torso
-    //     -0.0016821925351926288, -0.004284529460797688, 0.030389771690123243, // head
-    //     -0.040592118429752494, -0.1695472679986807, -0.20799422095574033,
-    //     0.045397975984119654, // left arm
-    //     -0.03946672931050908, -0.16795588539580256, -0.20911090583076936,
-    //     0.0419854257806720; // right
-    //                         // arm
-
-    // jointPositions << -0.10704676769729708, 0.012925973405522994, 0.071895284039525,
-    //     -0.0996134196581665, -0.09861216989767335, -0.014251179274100766, -0.11118618014578055,
-    //     0.035651653099700815, 0.057847116296006404, -0.09680096080425257, -0.0990365301429598,
-    //     -0.033878120609673684, 0.15568026047513014, 0.004317234521230275, -0.02030554515076784,
-    //     -0.0021306312005093236, 0.0029481809738139265, 0.009979402224284993,
-    //     -0.05175542996772139, 0.10000318973045413, -0.19553431552870545, 0.04983171308345671,
-    //     -0.053410414924022265, 0.09998072151822349, -0.20769041030905094, -0.006947678797282503;
-
     jointPositions << -0.10914914922234864, 0.013321900684695305, 0.0641749643461214,
         -0.10257791368141178, -0.10022507712940709, -0.008216588774319855, -0.12268291054316265,
         0.030634497603792124, 0.07615972729195111, -0.08458915163006389, -0.09374216923819316,
@@ -451,7 +476,7 @@ bool CentroidalMPCBlock::advance()
     generatorInput.mergePointIndex = 0;
     if (m_inputValid && !m_isFirstRun)
     {
-        generatorInput.mergePointIndex = 1;
+        generatorInput.mergePointIndex = 5;
     }
     generatorInput.desiredFutureBaseTrajectory
         = m_generatorInputBuilder.getOutput().desiredFutureBaseTrajectory;
@@ -507,13 +532,53 @@ bool CentroidalMPCBlock::advance()
     m_output.adherentComputationTime = toc - tic;
     tic = toc;
 
-    if (!m_controller.setReferenceTrajectory(reducedHeightCoM, scaledAngularMomentum))
+    if (!m_comFrequencyAdapter.spline.setKnots(reducedHeightCoM,
+                                               m_comFrequencyAdapter.inputTimeKnots))
+    {
+        log()->error("{} Unable to set the knots of the com spline.", logPrefix);
+        return false;
+    }
+
+    if (!m_angularMomentumFrequencyAdapter.spline
+             .setKnots(scaledAngularMomentum, m_angularMomentumFrequencyAdapter.inputTimeKnots))
+    {
+        log()->error("{} Unable to set the knots of the angular momentum spline.", logPrefix);
+        return false;
+    }
+
+    if (!m_comFrequencyAdapter.spline.evaluateOrderedPoints(m_comFrequencyAdapter.outputTimeKnots,
+                                                            m_comFrequencyAdapter.outputPoints,
+                                                            m_comFrequencyAdapter.dummy,
+                                                            m_comFrequencyAdapter.dummy))
+    {
+        log()->error("{} Unable to evaluate the com spline.", logPrefix);
+        return false;
+    }
+
+    if (!m_angularMomentumFrequencyAdapter.spline
+             .evaluateOrderedPoints(m_angularMomentumFrequencyAdapter.outputTimeKnots,
+                                    m_angularMomentumFrequencyAdapter.outputPoints,
+                                    m_angularMomentumFrequencyAdapter.dummy,
+                                    m_angularMomentumFrequencyAdapter.dummy))
+    {
+        log()->error("{} Unable to evaluate the angular momentum spline.", logPrefix);
+        return false;
+    }
+
+    if (!m_controller.setReferenceTrajectory(m_comFrequencyAdapter.outputPoints,
+                                             m_angularMomentumFrequencyAdapter.outputPoints))
     {
         log()->error("{} Unable to set the reference trajectory of the MPC.", logPrefix);
         return false;
     }
 
-    log()->info("print contact mann");
+    // if (!m_controller.setReferenceTrajectory(reducedHeightCoM, scaledAngularMomentum))
+    // {
+    //     log()->error("{} Unable to set the reference trajectory of the MPC.", logPrefix);
+    //     return false;
+    // }
+
+    log()->warn("print contact mann");
     for (const auto& [key, list] : MANNGeneratorOutput.phaseList.lists())
     {
         for (const auto& contact : list)
@@ -528,7 +593,7 @@ bool CentroidalMPCBlock::advance()
         }
     }
 
-    log()->info("print contact mpc");
+    log()->warn("print contact mpc");
     for (const auto& [key, list] : m_controller.getOutput().contactPhaseList.lists())
     {
         for (const auto& contact : list)
