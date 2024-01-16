@@ -22,6 +22,8 @@
 
 #include <iDynTree/Core/EigenHelpers.h>
 
+#include <numeric>
+
 using namespace CentroidalMPCWalking;
 using namespace BipedalLocomotion::ParametersHandler;
 
@@ -35,37 +37,6 @@ bool updateContactPhaseList(const std::chrono::nanoseconds& currentTime,
     BipedalLocomotion::Contacts::ContactListMap contactListMap;
     using BipedalLocomotion::log;
     constexpr auto logPrefix = "[updateContactPhaseList]";
-
-    // auto printContactList = [](const BipedalLocomotion::Contacts::ContactList& contactList) {
-    //     for (const auto& contact : contactList)
-    //     {
-    //         BipedalLocomotion::log()->info("name: {}, activation time: {}, deactivation time: {},
-    //         "
-    //                                        "pose {}",
-    //                                        contact.name,
-    //                                        std::chrono::duration_cast<std::chrono::milliseconds>(
-    //                                            contact.activationTime),
-    //                                        std::chrono::duration_cast<std::chrono::milliseconds>(
-    //                                            contact.deactivationTime),
-    //                                        contact.pose.coeffs().transpose());
-    //     }
-    // };
-
-    // BipedalLocomotion::log()->warn("MANN phase list. time {}",
-    //                                std::chrono::duration_cast<std::chrono::milliseconds>(
-    //                                    currentTime));
-    // for (const auto& [name, contactList] : mannPhaseList.lists())
-    // {
-    //     printContactList(contactList);
-    // }
-
-    // BipedalLocomotion::log()->warn("MPC phase list. time {}",
-    //                                std::chrono::duration_cast<std::chrono::milliseconds>(
-    //                                    currentTime));
-    // for (const auto& [name, contactList] : mpcPhaseList.lists())
-    // {
-    //     printContactList(contactList);
-    // }
 
     for (const auto& [name, contactList] : mannPhaseList.lists())
     {
@@ -135,15 +106,6 @@ bool updateContactPhaseList(const std::chrono::nanoseconds& currentTime,
 
     contactPhaseList.setLists(contactListMap);
 
-    // BipedalLocomotion::log()->warn("Updated phase list. time {}",
-    //                                std::chrono::duration_cast<std::chrono::milliseconds>(
-    //                                    currentTime));
-    // for (const auto& [name, contactList] : contactPhaseList.lists())
-    // {
-    //     printContactList(contactList);
-    // }
-
-    return true;
     return true;
 }
 
@@ -238,7 +200,9 @@ bool CentroidalMPCBlock::initialize(std::weak_ptr<const IParametersHandler> hand
     }
     std::size_t numberOfMannKnots = mannHorizon / mannSamplingTime;
     m_comFrequencyAdapter.inputTimeKnots.resize(numberOfMannKnots);
+    m_comFrequencyAdapter.inputTimeKnotsAbsolute.resize(numberOfMannKnots);
     m_angularMomentumFrequencyAdapter.inputTimeKnots.resize(numberOfMannKnots);
+    m_angularMomentumFrequencyAdapter.inputTimeKnotsAbsolute.resize(numberOfMannKnots);
     for (std::size_t i = 0; i < numberOfMannKnots; i++)
     {
         m_comFrequencyAdapter.inputTimeKnots[i] = i * mannSamplingTime;
@@ -267,7 +231,9 @@ bool CentroidalMPCBlock::initialize(std::weak_ptr<const IParametersHandler> hand
     m_comFrequencyAdapter.outputTimeKnots.resize(numberOfMpcKnots);
     m_angularMomentumFrequencyAdapter.outputTimeKnots.resize(numberOfMpcKnots);
     m_comFrequencyAdapter.outputPoints.resize(numberOfMpcKnots);
+    m_comFrequencyAdapter.outputTimeKnotsAbsolute.resize(numberOfMpcKnots);
     m_angularMomentumFrequencyAdapter.outputPoints.resize(numberOfMpcKnots);
+    m_angularMomentumFrequencyAdapter.outputTimeKnotsAbsolute.resize(numberOfMpcKnots);
     m_comFrequencyAdapter.dummy.resize(numberOfMpcKnots);
     m_angularMomentumFrequencyAdapter.dummy.resize(numberOfMpcKnots);
 
@@ -293,15 +259,26 @@ bool CentroidalMPCBlock::initialize(std::weak_ptr<const IParametersHandler> hand
     m_angularMomentumFrequencyAdapter.spline.setFinalConditions(Eigen::Vector3d::Zero(),
                                                                 Eigen::Vector3d::Zero());
 
+    m_mannCallingTime = std::chrono::nanoseconds(
+        std::lcm(int(slowDownFactor) * mannSamplingTime.count(), mpcSamplingTime.count()));
+
+    m_mergePointIndex = m_mannCallingTime / (int(slowDownFactor) * mannSamplingTime);
+    log()->info("{} mann calling time {}",
+                logPrefix,
+                std::chrono::duration_cast<std::chrono::milliseconds>(m_mannCallingTime));
+    log()->info("{} mann merge point index {}", logPrefix, m_mergePointIndex);
+
     // set the initial state of mann trajectory generator
+    // clang-format off
     Eigen::VectorXd jointPositions(26);
-    jointPositions << -0.10914914922234864, 0.013321900684695305, 0.0641749643461214,
-        -0.10257791368141178, -0.10022507712940709, -0.008216588774319855, -0.12268291054316265,
-        0.030634497603792124, 0.07615972729195111, -0.08458915163006389, -0.09374216923819316,
-        -0.03547153929302758, 0.15820784458809578, 0.0027573447757581046, -0.00487324344589554,
-        -0.00020607396841307649, -0.0024925787007575857, 0.044068009171592995,
-        -0.027139990021827265, 0.10001107590632177, -0.20205046715326178, 0.03895909848833218,
-        -0.03078463156388759, 0.09999763869735125, -0.20637555723866208, -0.003024742916772738;
+    jointPositions << 
+        -0.10914914922234864, 0.013321900684695305, 0.0641749643461214, -0.10257791368141178, -0.10022507712940709, -0.008216588774319855,// left leg
+        -0.12268291054316265, 0.030634497603792124, 0.07615972729195111, -0.08458915163006389, -0.09374216923819316, 0.03547153929302758, // right leg
+         0.15820784458809578, 0.0027573447757581046, -0.00487324344589554, // torso
+        -0.00020607396841307649, -0.0024925787007575857, 0.044068009171592995, // neck
+        -0.027139990021827265, 0.10001107590632177, -0.20205046715326178, 0.03895909848833218, // left arm
+        -0.03078463156388759, 0.09999763869735125, -0.20637555723866208, -0.003024742916772738; // right arm
+    // clang-format on
 
     iDynTree::KinDynComputations kinDyn;
     kinDyn.loadRobotModel(ml.model());
@@ -397,8 +374,8 @@ bool CentroidalMPCBlock::initialize(std::weak_ptr<const IParametersHandler> hand
     m_directionalInput.motionDirection.setZero();
     m_directionalInput.facingDirection.setZero();
 
-    m_directionalInput.facingDirection << 1, 0;
-    m_directionalInput.motionDirection << 1, 0;
+    m_directionalInput.facingDirection << 0, 0;
+    m_directionalInput.motionDirection << 0, 0;
 
     BipedalLocomotion::log()->info("{} Right foot pose {}.",
                                    logPrefix,
@@ -438,7 +415,18 @@ bool CentroidalMPCBlock::advance()
     namespace blf = ::BipedalLocomotion;
     using BipedalLocomotion::log;
 
-    auto tic = BipedalLocomotion::clock().now();
+    for (int i = 0; i < m_comFrequencyAdapter.outputTimeKnots.size(); i++)
+    {
+        m_comFrequencyAdapter.outputTimeKnotsAbsolute[i]
+            = m_absoluteTime + m_comFrequencyAdapter.outputTimeKnots[i];
+    }
+    for (int i = 0; i < m_angularMomentumFrequencyAdapter.outputTimeKnots.size(); i++)
+    {
+        m_angularMomentumFrequencyAdapter.outputTimeKnotsAbsolute[i]
+            = m_absoluteTime + m_angularMomentumFrequencyAdapter.outputTimeKnots[i];
+    }
+
+    auto tic = std::chrono::steady_clock::now();
 
     m_output.isValid = false;
 
@@ -476,7 +464,7 @@ bool CentroidalMPCBlock::advance()
     generatorInput.mergePointIndex = 0;
     if (m_inputValid && !m_isFirstRun)
     {
-        generatorInput.mergePointIndex = 5;
+        generatorInput.mergePointIndex = m_mergePointIndex;
     }
     generatorInput.desiredFutureBaseTrajectory
         = m_generatorInputBuilder.getOutput().desiredFutureBaseTrajectory;
@@ -485,14 +473,35 @@ bool CentroidalMPCBlock::advance()
     generatorInput.desiredFutureFacingDirections
         = m_generatorInputBuilder.getOutput().desiredFutureFacingDirections;
 
-    if (!m_generator.setInput(generatorInput))
+    using namespace std::chrono_literals;
+    if (m_absoluteTime % m_mannCallingTime == 0s)
     {
-        log()->error("{} Unable to set the input to MANN generator.", logPrefix);
-        return false;
+        for (int i = 0; i < m_comFrequencyAdapter.inputTimeKnots.size(); i++)
+        {
+            m_comFrequencyAdapter.inputTimeKnotsAbsolute[i]
+                = m_absoluteTime + m_comFrequencyAdapter.inputTimeKnots[i];
+        }
+        for (int i = 0; i < m_angularMomentumFrequencyAdapter.inputTimeKnots.size(); i++)
+        {
+            m_angularMomentumFrequencyAdapter.inputTimeKnotsAbsolute[i]
+                = m_absoluteTime + m_angularMomentumFrequencyAdapter.inputTimeKnots[i];
+        }
+
+        if (!m_generator.setInput(generatorInput))
+        {
+            log()->error("{} Unable to set the input to MANN generator.", logPrefix);
+            return false;
+        }
+        if (!m_generator.advance())
+        {
+            log()->error("{} Unable to compute one step of the MANN generator.", logPrefix);
+            return false;
+        }
     }
-    if (!m_generator.advance())
+
+    if (!m_generator.isOutputValid())
     {
-        log()->error("{} Unable to compute one step of the MANN generator.", logPrefix);
+        log()->error("{} The output of the MANN generator is not valid.", logPrefix);
         return false;
     }
 
@@ -528,35 +537,37 @@ bool CentroidalMPCBlock::advance()
     m_output.comMANN = reducedHeightCoM.front();
     m_output.angularMomentumMann = scaledAngularMomentum.front();
 
-    auto toc = BipedalLocomotion::clock().now();
+    auto toc = std::chrono::steady_clock::now();
     m_output.adherentComputationTime = toc - tic;
     tic = toc;
 
     if (!m_comFrequencyAdapter.spline.setKnots(reducedHeightCoM,
-                                               m_comFrequencyAdapter.inputTimeKnots))
+                                               m_comFrequencyAdapter.inputTimeKnotsAbsolute))
     {
         log()->error("{} Unable to set the knots of the com spline.", logPrefix);
         return false;
     }
 
     if (!m_angularMomentumFrequencyAdapter.spline
-             .setKnots(scaledAngularMomentum, m_angularMomentumFrequencyAdapter.inputTimeKnots))
+             .setKnots(scaledAngularMomentum,
+                       m_angularMomentumFrequencyAdapter.inputTimeKnotsAbsolute))
     {
         log()->error("{} Unable to set the knots of the angular momentum spline.", logPrefix);
         return false;
     }
 
-    if (!m_comFrequencyAdapter.spline.evaluateOrderedPoints(m_comFrequencyAdapter.outputTimeKnots,
-                                                            m_comFrequencyAdapter.outputPoints,
-                                                            m_comFrequencyAdapter.dummy,
-                                                            m_comFrequencyAdapter.dummy))
+    if (!m_comFrequencyAdapter.spline
+             .evaluateOrderedPoints(m_comFrequencyAdapter.outputTimeKnotsAbsolute,
+                                    m_comFrequencyAdapter.outputPoints,
+                                    m_comFrequencyAdapter.dummy,
+                                    m_comFrequencyAdapter.dummy))
     {
         log()->error("{} Unable to evaluate the com spline.", logPrefix);
         return false;
     }
 
     if (!m_angularMomentumFrequencyAdapter.spline
-             .evaluateOrderedPoints(m_angularMomentumFrequencyAdapter.outputTimeKnots,
+             .evaluateOrderedPoints(m_angularMomentumFrequencyAdapter.outputTimeKnotsAbsolute,
                                     m_angularMomentumFrequencyAdapter.outputPoints,
                                     m_angularMomentumFrequencyAdapter.dummy,
                                     m_angularMomentumFrequencyAdapter.dummy))
@@ -572,47 +583,18 @@ bool CentroidalMPCBlock::advance()
         return false;
     }
 
-    // if (!m_controller.setReferenceTrajectory(reducedHeightCoM, scaledAngularMomentum))
-    // {
-    //     log()->error("{} Unable to set the reference trajectory of the MPC.", logPrefix);
-    //     return false;
-    // }
-
-    log()->warn("print contact mann");
-    for (const auto& [key, list] : MANNGeneratorOutput.phaseList.lists())
-    {
-        for (const auto& contact : list)
-        {
-            log()->info("name: {}, activation time: {}, deactivation time: {}, pose {}",
-                        contact.name,
-                        std::chrono::duration_cast<std::chrono::milliseconds>(
-                            contact.activationTime),
-                        std::chrono::duration_cast<std::chrono::milliseconds>(
-                            contact.deactivationTime),
-                        contact.pose.coeffs().transpose());
-        }
-    }
-
-    log()->warn("print contact mpc");
-    for (const auto& [key, list] : m_controller.getOutput().contactPhaseList.lists())
-    {
-        for (const auto& contact : list)
-        {
-            log()->info("name: {}, activation time: {}, deactivation time: {}, pose {}",
-                        contact.name,
-                        std::chrono::duration_cast<std::chrono::milliseconds>(
-                            contact.activationTime),
-                        std::chrono::duration_cast<std::chrono::milliseconds>(
-                            contact.deactivationTime),
-                        contact.pose.coeffs().transpose());
-        }
-    }
-
+    BipedalLocomotion::Contacts::ContactPhaseList mannContactPhaseList = MANNGeneratorOutput.phaseList;
     BipedalLocomotion::Contacts::ContactPhaseList contactPhaseList;
+    if(!mannContactPhaseList.forceSampleTime(m_dT))
+    {
+        log()->error("{} Unable to force the sample time of the contact phase list.", logPrefix);
+        return false;
+    }
+
     if (!m_isFirstRun)
     {
         if (!updateContactPhaseList(m_absoluteTime,
-                                    MANNGeneratorOutput.phaseList,
+                                    mannContactPhaseList,
                                     m_controller.getOutput().contactPhaseList,
                                     contactPhaseList))
         {
@@ -621,7 +603,7 @@ bool CentroidalMPCBlock::advance()
         }
     } else
     {
-        contactPhaseList = MANNGeneratorOutput.phaseList;
+        contactPhaseList = mannContactPhaseList;
     }
 
     if (!m_controller.setContactPhaseList(contactPhaseList))
@@ -640,7 +622,7 @@ bool CentroidalMPCBlock::advance()
     m_output.controllerOutput = m_controller.getOutput();
     m_output.isValid = true;
     m_output.currentTime = m_absoluteTime;
-    m_output.mpcComputationTime = BipedalLocomotion::clock().now() - tic;
+    m_output.mpcComputationTime = std::chrono::steady_clock::now() - tic;
     m_output.contactPhaseList = m_controller.getOutput().contactPhaseList;
     m_output.mannContactPhaseList = MANNGeneratorOutput.phaseList;
 

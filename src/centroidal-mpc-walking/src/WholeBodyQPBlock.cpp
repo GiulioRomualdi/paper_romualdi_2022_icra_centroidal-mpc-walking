@@ -646,7 +646,70 @@ bool WholeBodyQPBlock::initialize(std::weak_ptr<const IParametersHandler> handle
     }
 
     // open logged data port
-    m_logDataPort.open("/centroidal-mpc/log:o");
+    if (!m_logDataServer.initialize(parametersHandler->getGroup("LOGGER")))
+    {
+        BipedalLocomotion::log()->error("{} Unable to initialize the log data server.", logPrefix);
+        return false;
+    }
+
+    // initialize the metadata
+
+    m_logDataServer.populateMetadata("com::position::measured", {"x", "y", "z"});
+    m_logDataServer.populateMetadata("com::position::desired", {"x", "y", "z"});
+    m_logDataServer.populateMetadata("com::position::integrated", {"x", "y", "z"});
+    m_logDataServer.populateMetadata("com::position::mann", {"x", "y", "z"});
+    m_logDataServer.populateMetadata("com::position::ik_input", {"x", "y", "z"});
+    m_logDataServer.populateMetadata("com::position::mpc_output", {"x", "y", "z"});
+    m_logDataServer.populateMetadata("base::position::measured", {"x", "y", "z"});
+    m_logDataServer.populateMetadata("base::orientation::measured", {"x", "y", "z", "w"});
+    m_logDataServer.populateMetadata("fixed_foot::index", {"index"});
+    m_logDataServer.populateMetadata("fixed_foot::translation", {"x", "y", "z"});
+    m_logDataServer.populateMetadata("fixed_foot::orientation", {"x", "y", "z", "w"});
+    m_logDataServer.populateMetadata("left_foot::position::desired", {"x", "y", "z"});
+    m_logDataServer.populateMetadata("left_foot::orientation::desired", {"x", "y", "z", "w"});
+    m_logDataServer.populateMetadata("right_foot::position::desired", {"x", "y", "z"});
+    m_logDataServer.populateMetadata("right_foot::orientation::desired", {"x", "y", "z", "w"});
+    m_logDataServer.populateMetadata("computation_time::CentroidalMPC", {"time"});
+    m_logDataServer.populateMetadata("computation_time::Adherent", {"time"});
+    m_logDataServer.populateMetadata("computation_time::WholeBodyQP", {"time"});
+    m_logDataServer.populateMetadata("zmp::desired", {"x", "y"});
+    m_logDataServer.populateMetadata("zmp::measured", {"x", "y"});
+    m_logDataServer.populateMetadata("external_wrench::filtered",
+                                     {"fx", "fy", "fz", "mx", "my", "mz"});
+    m_logDataServer.populateMetadata("external_wrench::raw", {"fx", "fy", "fz", "mx", "my", "mz"});
+    m_logDataServer.populateMetadata("joints_state::positions::mann",
+                                     m_sensorBridge.getJointsList());
+    m_logDataServer.populateMetadata("joints_state::positions::desired",
+                                     m_sensorBridge.getJointsList());
+    m_logDataServer.populateMetadata("angular_momentum::mann", {"x", "y", "z"});
+    m_logDataServer.populateMetadata("angular_momentum::mpc", {"x", "y", "z"});
+    m_logDataServer.populateMetadata("joypad::motion_direction", {"x", "y"});
+    m_logDataServer.populateMetadata("joypad::facing_direction", {"x", "y"});
+
+    for (const std::string& key : {"left_foot", "right_foot"})
+    {
+        m_logDataServer.populateMetadata("contact::" + key + "::position::desired",
+                                         {"x", "y", "z"});
+        m_logDataServer.populateMetadata("contact::" + key + "::orientation::desired",
+                                         {"x", "y", "z", "w"});
+
+        m_logDataServer.populateMetadata("contact::" + key + "::position::nominal",
+                                         {"x", "y", "z"});
+        m_logDataServer.populateMetadata("contact::" + key + "::orientation::nominal",
+                                         {"x", "y", "z", "w"});
+
+        for (const int cornerIndex : {0, 1, 2, 3})
+        {
+            m_logDataServer.populateMetadata("contact::" + key + "::corner"
+                                                 + std::to_string(cornerIndex) + "::force",
+                                             {"x", "y", "z"});
+            m_logDataServer.populateMetadata("contact::" + key + "::corner"
+                                                 + std::to_string(cornerIndex) + "::position",
+                                             {"x", "y", "z"});
+        }
+    }
+
+    m_logDataServer.finalizeMetadata();
 
     m_leftFootPlanner.setTime(m_absoluteTime);
     m_rightFootPlanner.setTime(m_absoluteTime);
@@ -813,7 +876,7 @@ bool WholeBodyQPBlock::advance()
 {
     constexpr auto errorPrefix = "[WholeBodyQPBlock::advance]";
 
-    auto tic = BipedalLocomotion::clock().now();
+    auto tic = std::chrono::steady_clock::now();
 
     bool shouldAdvance = false;
     m_output.isValid = false;
@@ -1198,82 +1261,81 @@ bool WholeBodyQPBlock::advance()
     m_output.angularMomentum
         = m_centroidalSystem.dynamics->getState().get_from_hash<"angular_momentum"_h>();
 
-    auto toc = BipedalLocomotion::clock().now();
+    auto toc = std::chrono::steady_clock::now();
     Eigen::Matrix<double, 1, 1> computationTime{std::chrono::duration<double>(toc - tic).count()};
 
-    BipedalLocomotion::YarpUtilities::VectorsCollection& data = m_logDataPort.prepare();
-    data.vectors.clear();
-    auto populateDataVector = [&](const auto& vector, const std::string& name) {
-        data.vectors[name].assign(vector.data(), vector.data() + vector.size());
-    };
+    std::vector<double> fixedFootIndex(1, m_fixedFootDetector.getFixedFoot().index);
 
-    std::vector<int> fixedFootIndex(1, m_fixedFootDetector.getFixedFoot().index);
+    m_logDataServer.prepareData();
+    m_logDataServer.clearData();
+    m_logDataServer.populateData("com::position::measured",
+                                 iDynTree::toEigen(
+                                     m_kinDynWithMeasured->getCenterOfMassPosition()));
 
-    populateDataVector(iDynTree::toEigen(m_kinDynWithMeasured->getCenterOfMassPosition()),
-                       "com::position::measured");
-    populateDataVector(iDynTree::toEigen(m_kinDynWithDesired->getCenterOfMassPosition()),
-                       "com::position::desired");
-    populateDataVector(m_output.com, "com::position::integrated");
-    populateDataVector(m_input.comMANN, "com::position::mann");
-    populateDataVector(comdes, "com::position::ik_input");
-    populateDataVector(m_centroidalSystem.dynamics->getState().get_from_hash<"com_pos"_h>(),
-                       "com::position::mpc_output");
-    populateDataVector(m_baseTransform.translation(), "base::position::measured");
-    populateDataVector(m_baseTransform.quat().coeffs(), "base::orientation::measured");
-    populateDataVector(fixedFootIndex, "fixed_foot::index");
-    populateDataVector(m_fixedFootDetector.getFixedFoot().pose.translation(),
-                       "fixed_foot::translation");
-    populateDataVector(m_fixedFootDetector.getFixedFoot().pose.quat().coeffs(),
-                       "fixed_foot::orientation");
+    m_logDataServer.populateData("com::position::desired",
+                                 iDynTree::toEigen(m_kinDynWithDesired->getCenterOfMassPosition()));
 
-    populateDataVector(m_leftFootPlanner.getOutput().transform.translation(),
-                       "left_foot::position::desired");
-    populateDataVector(m_leftFootPlanner.getOutput().transform.quat().coeffs(),
-                       "left_foot::orientation::desired");
-    populateDataVector(m_rightFootPlanner.getOutput().transform.translation(),
-                       "right_foot::position::desired");
-    populateDataVector(m_rightFootPlanner.getOutput().transform.quat().coeffs(),
-                       "right_foot::orientation::desired");
-    populateDataVector(std::array<double, 1>{std::chrono::duration<double>(
-                                                 m_input.mpcComputationTime)
-                                                 .count()},
-                       "computation_time::CentroidalMPC");
-    populateDataVector(std::array<double, 1>{std::chrono::duration<double>(
-                                                 m_input.adherentComputationTime)
-                                                 .count()},
-                       "computation_time::AdherentMPC");
-    populateDataVector(computationTime, "computation_time::WholeBodyQP");
+    m_logDataServer.populateData("com::position::integrated", m_output.com);
+    m_logDataServer.populateData("com::position::mann", m_input.comMANN);
+    m_logDataServer.populateData("com::position::ik_input", comdes);
+    m_logDataServer
+        .populateData("com::position::mpc_output",
+                      m_centroidalSystem.dynamics->getState().get_from_hash<"com_pos"_h>());
+    m_logDataServer.populateData("base::position::measured", m_baseTransform.translation());
+    m_logDataServer.populateData("base::orientation::measured", m_baseTransform.quat().coeffs());
+    m_logDataServer.populateData("fixed_foot::index", fixedFootIndex);
+    m_logDataServer.populateData("fixed_foot::translation",
+                                 m_fixedFootDetector.getFixedFoot().pose.translation());
+    m_logDataServer.populateData("fixed_foot::orientation",
+                                 m_fixedFootDetector.getFixedFoot().pose.quat().coeffs());
+    m_logDataServer.populateData("left_foot::position::desired",
+                                 m_leftFootPlanner.getOutput().transform.translation());
+    m_logDataServer.populateData("left_foot::orientation::desired",
+                                 m_leftFootPlanner.getOutput().transform.quat().coeffs());
+    m_logDataServer.populateData("right_foot::position::desired",
+                                 m_rightFootPlanner.getOutput().transform.translation());
+    m_logDataServer.populateData("right_foot::orientation::desired",
+                                 m_rightFootPlanner.getOutput().transform.quat().coeffs());
+    m_logDataServer
+        .populateData("computation_time::CentroidalMPC",
+                      std::array<double, 1>{
+                          std::chrono::duration<double>(m_input.mpcComputationTime).count()});
+    m_logDataServer.populateData("computation_time::Adherent",
+                                 std::array<double, 1>{
+                                     std::chrono::duration<double>(m_input.adherentComputationTime)
+                                         .count()});
+    m_logDataServer.populateData("computation_time::WholeBodyQP", computationTime);
+    m_logDataServer.populateData("zmp::desired", desiredZMP);
+    m_logDataServer.populateData("zmp::measured", measuredZMP);
+    m_logDataServer.populateData("external_wrench::filtered", m_output.totalExternalWrench);
+    m_logDataServer.populateData("external_wrench::raw", externalWrenchRaw);
+    m_logDataServer.populateData("joints_state::positions::mann", m_jointPosRegularize);
+    m_logDataServer.populateData("joints_state::positions::desired", m_desJointPos);
+    m_logDataServer.populateData("angular_momentum::mann", m_input.angularMomentumMann);
+    m_logDataServer.populateData("angular_momentum::mpc", m_output.angularMomentum);
+    m_logDataServer.populateData("joypad::motion_direction", m_input.motionDirection);
+    m_logDataServer.populateData("joypad::facing_direction", m_input.facingDirection);
 
-    // save desired zmp
-    populateDataVector(desiredZMP, "zmp::desired");
-    populateDataVector(measuredZMP, "zmp::measured");
-    populateDataVector(m_output.totalExternalWrench, "external_wrench::filtered");
-    populateDataVector(externalWrenchRaw, "external_wrench::raw");
-
-    populateDataVector(m_jointPosRegularize, "joints_state::positions::mann");
-    populateDataVector(m_desJointPos, "joints_state::positions::desired");
-    populateDataVector(m_input.angularMomentumMann, "angular_momentum::mann");
-    populateDataVector(m_output.angularMomentum, "angular_momentum::mpc");
-    populateDataVector(m_input.motionDirection, "joypad::motion_direction");
-    populateDataVector(m_input.facingDirection, "joypad::facing_direction");
-
-    for (auto& [key, contact] : m_input.controllerOutput.contacts)
+    for (const auto& [key, contact]: m_input.controllerOutput.contacts)
     {
-        populateDataVector(contact.pose.translation(), "contact::" + key + "::position::desired");
-        populateDataVector(contact.pose.quat().coeffs(),
-                           "contact::" + key + "::orientation::desired");
+        m_logDataServer.populateData("contact::" + key + "::position::desired",
+                                     contact.pose.translation());
+        m_logDataServer.populateData("contact::" + key + "::orientation::desired",
+                                     contact.pose.quat().coeffs());
         int i = 0;
         for (const auto& corner : contact.corners)
         {
-            populateDataVector(corner.force,
-                               "contact::" + key + "::corner" + std::to_string(i) + "::force");
-            populateDataVector(corner.position,
-                               "contact::" + key + "::corner" + std::to_string(i) + "::position");
+            m_logDataServer.populateData("contact::" + key + "::corner" + std::to_string(i)
+                                             + "::force",
+                                         corner.force);
+            m_logDataServer.populateData("contact::" + key + "::corner" + std::to_string(i)
+                                             + "::position",
+                                         corner.position);
             i++;
         }
     }
 
-    for (auto& [key, contactList] : m_input.mannContactPhaseList.lists())
+    for (const auto& [key, contactList] : m_input.mannContactPhaseList.lists())
     {
         auto contact = contactList.getPresentContact(m_absoluteTime);
         if (contact == contactList.cend())
@@ -1281,12 +1343,13 @@ bool WholeBodyQPBlock::advance()
             continue;
         }
 
-        populateDataVector(contact->pose.translation(), "contact::" + key + "::position::nominal");
-        populateDataVector(contact->pose.quat().coeffs(),
-                           "contact::" + key + "::orientation::nominal");
+        m_logDataServer.populateData("contact::" + key + "::position::nominal",
+                                     contact->pose.translation());
+        m_logDataServer.populateData("contact::" + key + "::orientation::nominal",
+                                     contact->pose.quat().coeffs());
     }
 
-    m_logDataPort.write();
+    m_logDataServer.sendData();
 
     // advance the time
     m_absoluteTime += m_dT;

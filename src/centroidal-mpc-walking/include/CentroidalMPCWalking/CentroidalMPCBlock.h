@@ -17,7 +17,7 @@
 #include <BipedalLocomotion/Contacts/ContactPhaseList.h>
 #include <BipedalLocomotion/ML/MANNAutoregressiveInputBuilder.h>
 #include <BipedalLocomotion/ML/MANNTrajectoryGenerator.h>
-#include <BipedalLocomotion/Math/CubicSpline.h>
+#include <BipedalLocomotion/Math/LinearSpline.h>
 #include <BipedalLocomotion/Math/Wrench.h>
 #include <BipedalLocomotion/ParametersHandler/IParametersHandler.h>
 #include <BipedalLocomotion/ReducedModelControllers/CentroidalMPC.h>
@@ -76,15 +76,20 @@ class CentroidalMPCBlock
 
     struct FrequencyAdapter
     {
-        BipedalLocomotion::Math::CubicSpline<Eigen::Vector3d> spline;
+        BipedalLocomotion::Math::LinearSpline<Eigen::Vector3d> spline;
         std::vector<std::chrono::nanoseconds> inputTimeKnots;
         std::vector<std::chrono::nanoseconds> outputTimeKnots;
+        std::vector<std::chrono::nanoseconds> inputTimeKnotsAbsolute;
+        std::vector<std::chrono::nanoseconds> outputTimeKnotsAbsolute;
         std::vector<Eigen::Vector3d> outputPoints;
         std::vector<Eigen::Vector3d> dummy;
     };
 
     FrequencyAdapter m_comFrequencyAdapter;
     FrequencyAdapter m_angularMomentumFrequencyAdapter;
+
+    std::size_t m_mergePointIndex{1};
+    std::chrono::nanoseconds m_mannCallingTime{std::chrono::nanoseconds::zero()};
 
     yarp::os::BufferedPort<yarp::sig::Vector> m_joypadPort;
 

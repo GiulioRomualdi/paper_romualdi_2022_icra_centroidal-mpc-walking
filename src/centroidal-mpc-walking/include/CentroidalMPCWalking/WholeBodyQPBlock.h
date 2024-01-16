@@ -41,7 +41,7 @@
 #include <BipedalLocomotion/RobotInterface/YarpSensorBridge.h>
 #include <BipedalLocomotion/SimplifiedModelControllers/CoMZMPController.h>
 #include <BipedalLocomotion/System/Advanceable.h>
-#include <BipedalLocomotion/YarpUtilities/VectorsCollection.h>
+#include <BipedalLocomotion/YarpUtilities/VectorsCollectionServer.h>
 
 #include <yarp/os/BufferedPort.h>
 
@@ -64,7 +64,7 @@ class WholeBodyQPBlock
     Eigen::VectorXd m_desJointPos; /**< Current joint positions. */
     Eigen::VectorXd m_desJointVel; /**< Current joint velocities. */
 
-    yarp::os::BufferedPort<BipedalLocomotion::YarpUtilities::VectorsCollection> m_logDataPort;
+    BipedalLocomotion::YarpUtilities::VectorsCollectionServer m_logDataServer;
 
     manif::SE3d m_baseTransform;
     manif::SE3d::Tangent m_baseVelocity;

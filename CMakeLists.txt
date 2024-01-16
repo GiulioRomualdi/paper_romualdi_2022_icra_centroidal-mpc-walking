@@ -70,6 +70,8 @@ find_package(BipedalLocomotionFramework 0.3.100 REQUIRED
              FloatingBaseEstimators IK ContinuousDynamicalSystem System
              SystemYarpImplementation ReducedModelControllers Planners ManifConversions
              ContactDetectors SimplifiedModelControllers)
+find_package(SDL REQUIRED)
+find_package(YARP COMPONENTS os sig REQUIRED)             
 
 #Function to automatize the process of creating a new library
 include(AddCentroidalMPCWalkingApplication)
