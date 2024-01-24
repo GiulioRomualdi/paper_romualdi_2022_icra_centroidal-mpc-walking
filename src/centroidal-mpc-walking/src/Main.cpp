@@ -114,6 +114,19 @@ int main(int argc, char* argv[])
         wholeBodyRunner.stop();
     });
 
+
+        std::string outcome;
+    while (true)
+    {
+        BipedalLocomotion::log()->info("[main] Do you want to start the experiment [y|n]?");
+        std::cin >> outcome;
+
+        if (outcome == "y")
+            break;
+        if (outcome == "n")
+            return EXIT_SUCCESS;
+    }
+
     // Run the threads
     BipedalLocomotion::System::Barrier barrier(2);
 
